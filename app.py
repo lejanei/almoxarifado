@@ -313,6 +313,28 @@ def register_stock_movement(
         )
 
 
+def update_product_record(product_id, nome, descricao, unidade, estoque_minimo):
+    execute(
+        "UPDATE products SET nome=:nome, descricao=:descricao, unidade=:unidade, estoque_minimo=:estoque_minimo, atualizado_em=:agora WHERE id=:id",
+        {
+            "id": int(product_id),
+            "nome": nome.strip(),
+            "descricao": descricao.strip(),
+            "unidade": unidade,
+            "estoque_minimo": float(estoque_minimo),
+            "agora": datetime.now(),
+        },
+    )
+
+def delete_product_record(product_id):
+    mov = fetch_df("SELECT COUNT(*) AS total FROM movements WHERE produto_id = :id", {"id": int(product_id)})
+    if not mov.empty and int(mov.iloc[0]["total"]) > 0:
+        raise ValueError("Este produto possui movimentações e não pode ser excluído.")
+    uso = fetch_df("SELECT COUNT(*) AS total FROM service_order_parts WHERE product_id = :id", {"id": int(product_id)})
+    if not uso.empty and int(uso.iloc[0]["total"]) > 0:
+        raise ValueError("Este produto já foi utilizado em ordens e não pode ser excluído.")
+    execute("DELETE FROM products WHERE id = :id", {"id": int(product_id)})
+
 def get_movements(limit=200):
     return fetch_df(
         "SELECT m.id,p.id AS produto_id,p.nome AS produto,m.tipo,m.quantidade,p.unidade,m.usuario_lancamento,m.observacao,m.criado_em FROM movements m INNER JOIN products p ON p.id=m.produto_id ORDER BY m.id DESC LIMIT :limite",
@@ -357,6 +379,12 @@ def update_machine(machine_id, nome, status):
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Atualizou máquina", "machines", machine_id, nome.strip())
 
 
+def delete_machine_record(machine_id):
+    uso = fetch_df("SELECT COUNT(*) AS total FROM service_orders WHERE machine_id = :id", {"id": int(machine_id)})
+    if not uso.empty and int(uso.iloc[0]["total"]) > 0:
+        raise ValueError("Esta máquina possui ordens vinculadas e não pode ser excluída.")
+    execute("DELETE FROM machines WHERE id = :id", {"id": int(machine_id)})
+
 def get_employees():
     return fetch_df(
         "SELECT id,nome,setor,funcao,criado_em,atualizado_em FROM employees ORDER BY nome"
@@ -390,6 +418,12 @@ def update_employee(emp_id, nome, setor, funcao):
     )
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Atualizou funcionário", "employees", emp_id, nome.strip())
 
+
+def delete_employee_record(emp_id):
+    uso = fetch_df("SELECT COUNT(*) AS total FROM service_order_employees WHERE employee_id = :id", {"id": int(emp_id)})
+    if not uso.empty and int(uso.iloc[0]["total"]) > 0:
+        raise ValueError("Este funcionário possui apontamentos em ordens e não pode ser excluído.")
+    execute("DELETE FROM employees WHERE id = :id", {"id": int(emp_id)})
 
 def get_orders(tipo):
     return fetch_df(
@@ -758,9 +792,9 @@ with st.sidebar:
     st.markdown(f"**{user['nome']}**")
     st.caption(f"Perfil: {user['perfil']} | {user['usuario']}")
     st.markdown("---")
-    common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo", "Produtos / Estoque"]
-    almox_menu = ["Produtos / Estoque"]
-    admin_menu = ["Produtos / Estoque", "Máquinas", "Funcionários", "Usuários", "Auditoria"]
+    common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo","Produtos / Estoque"]
+    almox_menu = []
+    admin_menu = ["Máquinas", "Funcionários", "Usuários", "Auditoria"]
 
     if is_admin():
         menu_options = common_menu + admin_menu
@@ -787,26 +821,23 @@ if menu == "Dashboard":
     abertas_pm = len(pm_df[pm_df["status"].isin(["Aberta", "Em andamento"])])
     mttr_os = calc_mttr(os_df)
     mttr_pm = calc_mttr(pm_df)
-    st.space()
-    
-    with st.container(border=True):
-        c1, c2, c3, c4 = st.columns(4)
-        #""" with c1:cont1 = st.container(border=True)cont1.markdown("### Produtos", text_alignment="center") cont1.subheader(len(products_df), text_alignment="center") """
-        c1.metric("Produtos", len(products_df))        
-        c2.metric("Máquinas", len(machines_df))
-        c3.metric("Funcionários", len(employees_df))
-        c4.metric(
-            "Saldo total estoque",
-            format_number(
-                products_df["estoque_atual"].sum() if not products_df.empty else 0
-            ),
-        )
-    with st.container(border=True):
-        c5, c6, c7, c8 = st.columns(4)
-        c5.metric("OS abertas", abertas_os)
-        c6.metric("Preventivas abertas", abertas_pm)
-        c7.metric("MTTR OS (h)", format_number(mttr_os))
-        c8.metric("MTTR Preventivas (h)", format_number(mttr_pm))
+
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Produtos", len(products_df))
+    c2.metric("Máquinas", len(machines_df))
+    c3.metric("Funcionários", len(employees_df))
+    c4.metric(
+        "Saldo total estoque",
+        format_number(
+            products_df["estoque_atual"].sum() if not products_df.empty else 0
+        ),
+    )
+
+    c5, c6, c7, c8 = st.columns(4)
+    c5.metric("OS abertas", abertas_os)
+    c6.metric("Preventivas abertas", abertas_pm)
+    c7.metric("MTTR OS (h)", format_number(mttr_os))
+    c8.metric("MTTR Preventivas (h)", format_number(mttr_pm))
 
     st.subheader("Indicadores de manutenção")
 
@@ -904,7 +935,9 @@ elif menu == "Produtos / Estoque":
         "Somente Administrador, Almoxarifado ou Operador pode acessar Produtos / Estoque.",
     )
     st.subheader("Produtos / Estoque")
-    t1, t2, t3, t4 = st.tabs(["Novo produto", "Entrada/Saída", "Consulta", "Histórico"])
+    t1, t2, t3, t4, t5 = st.tabs(
+        ["Novo produto", "Editar / Excluir", "Entrada/Saída", "Consulta", "Histórico"]
+    )
 
     with t1:
         if is_operador():
@@ -914,23 +947,52 @@ elif menu == "Produtos / Estoque":
                 c1, c2, c3 = st.columns(3)
                 nome = c1.text_input("Nome")
                 unidade = c2.selectbox("Unidade", ["UN", "KG", "PC", "M", "L"])
-                estoque_inicial = c3.number_input(
-                    "Estoque inicial", min_value=0.0, value=0.0
-                )
+                estoque_inicial = c3.number_input("Estoque inicial", min_value=0.0, value=0.0)
                 c4, c5 = st.columns([1, 2])
-                estoque_minimo = c4.number_input(
-                    "Estoque mínimo", min_value=0.0, value=0.0
-                )
+                estoque_minimo = c4.number_input("Estoque mínimo", min_value=0.0, value=0.0)
                 descricao = c5.text_area("Descrição")
-
                 if st.form_submit_button("Salvar produto", use_container_width=True):
-                    create_product(
-                        nome, descricao, unidade, estoque_inicial, estoque_minimo
-                    )
+                    create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo)
                     st.success("Produto cadastrado.")
                     st.rerun()
 
     with t2:
+        if is_operador():
+            st.info("Operador possui acesso somente para consulta de estoque.")
+        elif products_df.empty:
+            st.info("Nenhum produto cadastrado.")
+        else:
+            prod_map = {f"ID {int(r['id'])} - {r['nome']}": r for _, r in products_df.iterrows()}
+            sel = st.selectbox("Selecionar produto", list(prod_map.keys()))
+            row = prod_map[sel]
+            unidades = ["UN", "KG", "PC", "M", "L"]
+            unidade_atual = row["unidade"] if row["unidade"] in unidades else "UN"
+            with st.form("editar_produto"):
+                c1, c2 = st.columns(2)
+                nome = c1.text_input("Nome", value=str(row["nome"]))
+                unidade = c2.selectbox("Unidade", unidades, index=unidades.index(unidade_atual))
+                c3, c4 = st.columns(2)
+                c3.number_input("Estoque atual", value=float(row["estoque_atual"]), disabled=True)
+                estoque_minimo = c4.number_input("Estoque mínimo", min_value=0.0, value=float(row["estoque_minimo"]))
+                descricao = st.text_area("Descrição", value="" if pd.isna(row["descricao"]) else str(row["descricao"]))
+                b1, b2 = st.columns(2)
+                with b1:
+                    salvar = st.form_submit_button("Atualizar produto", use_container_width=True)
+                with b2:
+                    excluir = st.form_submit_button("Excluir produto", use_container_width=True)
+                if salvar:
+                    update_product_record(int(row["id"]), nome, descricao, unidade, estoque_minimo)
+                    st.success("Produto atualizado.")
+                    st.rerun()
+                if excluir:
+                    try:
+                        delete_product_record(int(row["id"]))
+                        st.success("Produto excluído.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
+    with t3:
         if is_operador():
             st.info("Operador não pode lançar movimentações de estoque.")
         else:
@@ -946,106 +1008,80 @@ elif menu == "Produtos / Estoque":
                     tipo = st.selectbox("Tipo", ["ENTRADA", "SAIDA"])
                     quantidade = st.number_input("Quantidade", min_value=0.01, value=1.0)
                     observacao = st.text_input("Observação")
-
                     if st.form_submit_button("Lançar", use_container_width=True):
-                        register_stock_movement(
-                            produto_map[produto],
-                            tipo,
-                            quantidade,
-                            observacao,
-                            user["usuario"],
-                        )
+                        register_stock_movement(produto_map[produto], tipo, quantidade, observacao, user["usuario"])
                         st.success("Movimentação registrada.")
                         st.rerun()
 
-    with t3:
+    with t4:
         if products_df.empty:
             st.info("Nenhum produto cadastrado.")
         else:
             st.dataframe(
-                products_df.rename(
-                    columns={
-                        "id": "ID",
-                        "nome": "Produto",
-                        "descricao": "Descrição",
-                        "unidade": "Unidade",
-                        "estoque_atual": "Estoque atual",
-                        "estoque_minimo": "Estoque mínimo",
-                    }
-                ),
+                products_df.rename(columns={"id": "ID", "nome": "Produto", "descricao": "Descrição", "unidade": "Unidade", "estoque_atual": "Estoque atual", "estoque_minimo": "Estoque mínimo"}),
                 use_container_width=True,
                 hide_index=True,
             )
 
-    with t4:
+    with t5:
         mov_df = get_movements()
         if mov_df.empty:
             st.info("Nenhuma movimentação registrada.")
         else:
             st.dataframe(
-                mov_df.rename(
-                    columns={
-                        "id": "ID",
-                        "produto_id": "ID produto",
-                        "produto": "Produto",
-                        "tipo": "Tipo",
-                        "quantidade": "Quantidade",
-                        "unidade": "Unidade",
-                        "usuario_lancamento": "Usuário",
-                        "observacao": "Observação",
-                        "criado_em": "Data/hora",
-                    }
-                ),
+                mov_df.rename(columns={"id": "ID", "produto_id": "ID produto", "produto": "Produto", "tipo": "Tipo", "quantidade": "Quantidade", "unidade": "Unidade", "usuario_lancamento": "Usuário", "observacao": "Observação", "criado_em": "Data/hora"}),
                 use_container_width=True,
                 hide_index=True,
             )
 
 elif menu == "Máquinas":
-    require_permission(can_manage_master_data(), "Somente Administrador pode acessar Máquinas.")
+    require_permission(can_manage_master_data(), "Somente Administrador ou Almoxarifado pode acessar Máquinas.")
     st.subheader("Máquinas")
-    t1, t2 = st.tabs(["Nova / Editar", "Consulta"])
+    t1, t2 = st.tabs(["Nova máquina", "Editar / Excluir"])
+
     with t1:
         with st.form("nova_maquina", clear_on_submit=True):
             c1, c2 = st.columns(2)
             nome = c1.text_input("Nome da máquina")
-            status = c2.selectbox(
-                "Status", ["Ativa", "Parada", "Em manutenção", "Inativa"]
-            )
+            status = c2.selectbox("Status", ["Ativa", "Parada", "Em manutenção", "Inativa"])
             if st.form_submit_button("Salvar máquina", use_container_width=True):
                 create_machine(nome, status)
                 st.success("Máquina cadastrada.")
                 st.rerun()
-        if not machines_df.empty:
-            maq_map = {
-                f"ID {int(r['id'])} - {r['nome']}": r for _, r in machines_df.iterrows()
-            }
-            sel = st.selectbox("Editar máquina", list(maq_map.keys()))
+
+    with t2:
+        if machines_df.empty:
+            st.info("Nenhuma máquina cadastrada.")
+        else:
+            maq_map = {f"ID {int(r['id'])} - {r['nome']}": r for _, r in machines_df.iterrows()}
+            sel = st.selectbox("Selecionar máquina", list(maq_map.keys()))
             row = maq_map[sel]
             with st.form("editar_maquina"):
                 nome = st.text_input("Nome", value=str(row["nome"]))
                 opts = ["Ativa", "Parada", "Em manutenção", "Inativa"]
-                status = st.selectbox(
-                    "Status",
-                    opts,
-                    index=opts.index(row["status"]) if row["status"] in opts else 0,
-                )
-                if st.form_submit_button("Atualizar máquina", use_container_width=True):
+                status = st.selectbox("Status", opts, index=opts.index(row["status"]) if row["status"] in opts else 0)
+                b1, b2 = st.columns(2)
+                with b1:
+                    salvar = st.form_submit_button("Atualizar máquina", use_container_width=True)
+                with b2:
+                    excluir = st.form_submit_button("Excluir máquina", use_container_width=True)
+                if salvar:
                     update_machine(int(row["id"]), nome, status)
                     st.success("Máquina atualizada.")
                     st.rerun()
-    with t2:
-        st.dataframe(
-            machines_df.rename(
-                columns={"id": "ID", "nome": "Máquina", "status": "Status"}
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
+                if excluir:
+                    try:
+                        delete_machine_record(int(row["id"]))
+                        st.success("Máquina excluída.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
 
 elif menu == "Funcionários":
-    require_permission(can_manage_master_data(), "Somente Administrador pode acessar Funcionários.")
+    require_permission(can_manage_master_data(), "Somente Administrador ou Almoxarifado pode acessar Funcionários.")
     st.subheader("Funcionários")
-    t1, t2 = st.tabs(["Novo / Editar", "Consulta"])
+    t1, t2 = st.tabs(["Novo funcionário", "Editar / Excluir"])
+
     with t1:
         with st.form("novo_funcionario", clear_on_submit=True):
             c1, c2, c3 = st.columns(3)
@@ -1056,45 +1092,35 @@ elif menu == "Funcionários":
                 create_employee(nome, setor, funcao)
                 st.success("Funcionário cadastrado.")
                 st.rerun()
-        if not employees_df.empty:
-            emp_map = {
-                f"ID {int(r['id'])} - {r['nome']}": r
-                for _, r in employees_df.iterrows()
-            }
-            sel = st.selectbox("Editar funcionário", list(emp_map.keys()))
+
+    with t2:
+        if employees_df.empty:
+            st.info("Nenhum funcionário cadastrado.")
+        else:
+            emp_map = {f"ID {int(r['id'])} - {r['nome']}": r for _, r in employees_df.iterrows()}
+            sel = st.selectbox("Selecionar funcionário", list(emp_map.keys()))
             row = emp_map[sel]
             with st.form("editar_funcionario"):
                 c1, c2, c3 = st.columns(3)
                 nome = c1.text_input("Nome", value=str(row["nome"]))
-                setor = c2.text_input(
-                    "Setor", value="" if pd.isna(row["setor"]) else str(row["setor"])
-                )
-                funcao = c3.text_input(
-                    "Função", value="" if pd.isna(row["funcao"]) else str(row["funcao"])
-                )
-                if st.form_submit_button(
-                    "Atualizar funcionário", use_container_width=True
-                ):
-                    updateEmployee = update_employee(
-                        int(row["id"]), nome, setor, funcao
-                    )
+                setor = c2.text_input("Setor", value="" if pd.isna(row["setor"]) else str(row["setor"]))
+                funcao = c3.text_input("Função", value="" if pd.isna(row["funcao"]) else str(row["funcao"]))
+                b1, b2 = st.columns(2)
+                with b1:
+                    salvar = st.form_submit_button("Atualizar funcionário", use_container_width=True)
+                with b2:
+                    excluir = st.form_submit_button("Excluir funcionário", use_container_width=True)
+                if salvar:
+                    update_employee(int(row["id"]), nome, setor, funcao)
                     st.success("Funcionário atualizado.")
                     st.rerun()
-    with t2:
-        st.dataframe(
-            employees_df.rename(
-                columns={
-                    "id": "ID",
-                    "nome": "Nome",
-                    "setor": "Setor",
-                    "funcao": "Função",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-
+                if excluir:
+                    try:
+                        delete_employee_record(int(row["id"]))
+                        st.success("Funcionário excluído.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
 
 def order_page(tipo, titulo):
     st.subheader(titulo)
