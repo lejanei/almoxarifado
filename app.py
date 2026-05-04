@@ -338,7 +338,7 @@ def delete_product_record(product_id):
 def get_movements(limit=200):
     return fetch_df(
         "SELECT m.id,p.id AS produto_id,p.nome AS produto,m.tipo,m.quantidade,p.unidade,m.usuario_lancamento,m.observacao,m.criado_em FROM movements m INNER JOIN products p ON p.id=m.produto_id ORDER BY m.id DESC LIMIT :limite",
-        {"limite": int(limit)},
+        
     )
 
 
