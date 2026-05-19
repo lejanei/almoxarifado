@@ -4,6 +4,7 @@ from pathlib import Path
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
+import shop_manager_app as shop_manager
 
 DEFAULT_DB_URL = "mysql+pymysql://ljsyst02_adm:vinimalu121924@ljsystem.com.br/ljsyst02_almoxarifado?charset=utf8mb4"
 APP_NAME = "StockPro Manutenção"
@@ -116,8 +117,11 @@ def get_engine():
 
 def init_db():
     ddls = [
+        """CREATE TABLE IF NOT EXISTS centros_custo (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL UNIQUE,descricao TEXT,ativo TINYINT(1) NOT NULL DEFAULT 1,criado_em VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS orcamentos_mensais (id INT AUTO_INCREMENT PRIMARY KEY,ano INT NOT NULL,mes INT NOT NULL,centro_custo_id INT NULL,valor_orcado DECIMAL(15,2) NOT NULL DEFAULT 0,alerta_percentual DECIMAL(5,2) NOT NULL DEFAULT 80,criado_em VARCHAR(50),atualizado_em VARCHAR(50),UNIQUE KEY uq_orc_mes_cc (ano,mes,centro_custo_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,usuario VARCHAR(80) NOT NULL UNIQUE,email VARCHAR(150),perfil VARCHAR(50),senha_hash VARCHAR(64),ativo TINYINT(1) NOT NULL DEFAULT 1,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
-        """CREATE TABLE IF NOT EXISTS products (id INT AUTO_INCREMENT PRIMARY KEY,codigo VARCHAR(80) NULL UNIQUE,nome VARCHAR(150) NOT NULL,descricao TEXT,unidade VARCHAR(20) NOT NULL DEFAULT 'UN',estoque_atual DECIMAL(18,3) NOT NULL DEFAULT 0,estoque_minimo DECIMAL(18,3) NOT NULL DEFAULT 0,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS products (id INT AUTO_INCREMENT PRIMARY KEY,codigo VARCHAR(80) NULL UNIQUE,nome VARCHAR(150) NOT NULL,descricao TEXT,unidade VARCHAR(20) NOT NULL DEFAULT 'UN',estoque_atual DECIMAL(18,3) NOT NULL DEFAULT 0,estoque_minimo DECIMAL(18,3) NOT NULL DEFAULT 0,
+            valor_unitario DECIMAL(18,4) NOT NULL DEFAULT 0,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS movements (id INT AUTO_INCREMENT PRIMARY KEY,produto_id INT NOT NULL,tipo VARCHAR(30) NOT NULL,quantidade DECIMAL(18,3) NOT NULL,observacao TEXT,usuario_lancamento VARCHAR(150),criado_em DATETIME NOT NULL,CONSTRAINT fk_movements_product FOREIGN KEY (produto_id) REFERENCES products(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS machines (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,status VARCHAR(50) NOT NULL DEFAULT 'Ativa',criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS employees (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,setor VARCHAR(100),funcao VARCHAR(100),criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
@@ -138,6 +142,18 @@ def init_db():
     with get_engine().begin() as conn:
         for ddl in ddls:
             conn.execute(text(ddl))
+        for sql in [
+            "ALTER TABLE products ADD COLUMN centro_custo_id INT NULL",
+            "ALTER TABLE products ADD COLUMN valor_unitario DECIMAL(18,4) NOT NULL DEFAULT 0",
+            "ALTER TABLE service_orders ADD COLUMN centro_custo_id INT NULL",
+            "ALTER TABLE pedidos ADD COLUMN centro_custo_id INT NULL",
+            "ALTER TABLE pedidos ADD COLUMN tipo_orcamento VARCHAR(20) NOT NULL DEFAULT 'OPEX'",
+            "ALTER TABLE orcamentos_mensais ADD COLUMN tipo_orcamento VARCHAR(20) NOT NULL DEFAULT 'OPEX'",
+        ]:
+            try:
+                conn.execute(text(sql))
+            except Exception:
+                pass
 
 
 def fetch_df(q, p=None):
@@ -206,6 +222,24 @@ def update_user_password(user_id, senha):
 def delete_user_record(user_id):
     execute("DELETE FROM users WHERE id = :id", {"id": int(user_id)})
 
+
+def get_cost_centers(only_active=True):
+    sql = "SELECT id,nome,descricao,ativo FROM centros_custo"
+    if only_active:
+        sql += " WHERE ativo=1"
+    sql += " ORDER BY nome"
+    return fetch_df(sql)
+
+
+def select_cost_center(label="Centro de custo", key=None, allow_empty=True):
+    centros = get_cost_centers()
+    options = []
+    if allow_empty: options.append("Sem centro de custo")
+    if not centros.empty: options += [f"ID {int(r['id'])} - {r['nome']}" for _, r in centros.iterrows()]
+    selected = st.selectbox(label, options or ["Sem centro de custo"], key=key)
+    if selected == "Sem centro de custo": return None
+    return int(selected.split(" - ")[0].replace("ID ", ""))
+
 def get_users():
     return fetch_df(
         "SELECT id,nome,usuario,email,perfil,ativo,criado_em,atualizado_em FROM users ORDER BY nome"
@@ -255,19 +289,21 @@ def create_user(nome, usuario, email, perfil, senha, ativo=True):
 
 def get_products():
     return fetch_df(
-        "SELECT id,nome,descricao,unidade,estoque_atual,estoque_minimo,criado_em,atualizado_em FROM products ORDER BY nome"
+        "SELECT p.id,p.nome,p.descricao,p.unidade,p.estoque_atual,p.estoque_minimo,p.valor_unitario,p.centro_custo_id,cc.nome AS centro_custo,p.criado_em,p.atualizado_em FROM products p LEFT JOIN centros_custo cc ON cc.id=p.centro_custo_id ORDER BY p.nome"
     )
 
 
-def create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo):
+def create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo, centro_custo_id=None, valor_unitario=0):
     execute(
-        "INSERT INTO products (codigo,nome,descricao,unidade,estoque_atual,estoque_minimo,criado_em,atualizado_em) VALUES (NULL,:nome,:descricao,:unidade,:estoque_atual,:estoque_minimo,:criado_em,:atualizado_em)",
+        "INSERT INTO products (codigo,nome,descricao,unidade,estoque_atual,estoque_minimo,valor_unitario,centro_custo_id,criado_em,atualizado_em) VALUES (NULL,:nome,:descricao,:unidade,:estoque_atual,:estoque_minimo,:valor_unitario,:centro_custo_id,:criado_em,:atualizado_em)",
         {
             "nome": nome.strip(),
             "descricao": descricao.strip(),
             "unidade": unidade,
             "estoque_atual": float(estoque_inicial),
             "estoque_minimo": float(estoque_minimo),
+            "valor_unitario": float(valor_unitario or 0),
+            "centro_custo_id": centro_custo_id,
             "criado_em": datetime.now(),
             "atualizado_em": datetime.now(),
         },
@@ -275,56 +311,104 @@ def create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo):
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Criou produto", "products", nome.strip(), f"Estoque inicial: {estoque_inicial}")
 
 
-def register_stock_movement(
-    produto_id, tipo, quantidade, observacao, usuario_lancamento
-):
+
+def calcular_custo_medio_entrada(estoque_atual, valor_atual, quantidade_entrada, valor_entrada):
+    estoque_atual = float(estoque_atual or 0)
+    valor_atual = float(valor_atual or 0)
+    quantidade_entrada = float(quantidade_entrada or 0)
+    valor_entrada = float(valor_entrada or 0)
+
+    if quantidade_entrada <= 0:
+        return valor_atual
+
+    if estoque_atual <= 0 or valor_atual <= 0:
+        return valor_entrada
+
+    estoque_final = estoque_atual + quantidade_entrada
+    if estoque_final <= 0:
+        return valor_entrada
+
+    return ((estoque_atual * valor_atual) + (quantidade_entrada * valor_entrada)) / estoque_final
+
+
+def register_stock_movement(produto_id, tipo, quantidade, observacao, usuario_lancamento, valor_unitario_entrada=0):
+    produto = fetch_df(
+        "SELECT id, estoque_atual, valor_unitario FROM products WHERE id=:id",
+        {"id": int(produto_id)},
+    )
+
+    if produto.empty:
+        raise ValueError("Produto não encontrado.")
+
+    estoque_atual = float(produto.iloc[0]["estoque_atual"] or 0)
+    valor_atual = float(produto.iloc[0].get("valor_unitario", 0) or 0)
     quantidade = float(quantidade)
-    with get_engine().begin() as conn:
-        produto = (
-            conn.execute(
-                text("SELECT id,estoque_atual FROM products WHERE id=:id FOR UPDATE"),
-                {"id": produto_id},
-            )
-            .mappings()
-            .first()
-        )
-        atual = float(produto["estoque_atual"])
-        novo = atual + quantidade if tipo == "ENTRADA" else atual - quantidade
-        if novo < 0:
-            raise ValueError("Estoque insuficiente.")
-        conn.execute(
-            text(
-                "UPDATE products SET estoque_atual=:estoque, atualizado_em=:agora WHERE id=:id"
-            ),
-            {"estoque": novo, "agora": datetime.now(), "id": produto_id},
-        )
-        conn.execute(
-            text(
-                "INSERT INTO movements (produto_id,tipo,quantidade,observacao,usuario_lancamento,criado_em) VALUES (:produto_id,:tipo,:quantidade,:observacao,:usuario_lancamento,:criado_em)"
-            ),
-            {
-                "produto_id": produto_id,
-                "tipo": tipo,
-                "quantidade": quantidade,
-                "observacao": observacao,
-                "usuario_lancamento": usuario_lancamento,
-                "criado_em": datetime.now(),
-            },
-        )
+    tipo = str(tipo).upper()
 
+    if tipo == "ENTRADA":
+        novo_estoque = estoque_atual + quantidade
+        novo_valor = calcular_custo_medio_entrada(
+            estoque_atual,
+            valor_atual,
+            quantidade,
+            valor_unitario_entrada,
+        )
+    else:
+        if quantidade > estoque_atual:
+            raise ValueError("Estoque insuficiente para saída.")
+        novo_estoque = estoque_atual - quantidade
+        novo_valor = valor_atual
 
-def update_product_record(product_id, nome, descricao, unidade, estoque_minimo):
     execute(
-        "UPDATE products SET nome=:nome, descricao=:descricao, unidade=:unidade, estoque_minimo=:estoque_minimo, atualizado_em=:agora WHERE id=:id",
+        """UPDATE products
+              SET estoque_atual=:estoque,
+                  valor_unitario=:valor_unitario,
+                  atualizado_em=:agora
+            WHERE id=:id""",
+        {
+            "id": int(produto_id),
+            "estoque": novo_estoque,
+            "valor_unitario": novo_valor,
+            "agora": datetime.now(),
+        },
+    )
+
+    execute(
+        """INSERT INTO movements
+           (produto_id,tipo,quantidade,observacao,usuario_lancamento,criado_em)
+           VALUES (:produto_id,:tipo,:quantidade,:observacao,:usuario_lancamento,:criado_em)""",
+        {
+            "produto_id": int(produto_id),
+            "tipo": tipo,
+            "quantidade": quantidade,
+            "observacao": observacao,
+            "usuario_lancamento": usuario_lancamento,
+            "criado_em": datetime.now(),
+        },
+    )
+
+
+def update_product_record(product_id, nome, descricao, unidade, estoque_minimo, valor_unitario=0):
+    execute(
+        """UPDATE products
+              SET nome=:nome,
+                  descricao=:descricao,
+                  unidade=:unidade,
+                  estoque_minimo=:estoque_minimo,
+                  valor_unitario=:valor_unitario,
+                  atualizado_em=:agora
+            WHERE id=:id""",
         {
             "id": int(product_id),
             "nome": nome.strip(),
             "descricao": descricao.strip(),
             "unidade": unidade,
             "estoque_minimo": float(estoque_minimo),
+            "valor_unitario": float(valor_unitario or 0),
             "agora": datetime.now(),
         },
     )
+
 
 def delete_product_record(product_id):
     mov = fetch_df("SELECT COUNT(*) AS total FROM movements WHERE produto_id = :id", {"id": int(product_id)})
@@ -335,10 +419,10 @@ def delete_product_record(product_id):
         raise ValueError("Este produto já foi utilizado em ordens e não pode ser excluído.")
     execute("DELETE FROM products WHERE id = :id", {"id": int(product_id)})
 
-def get_movements():
+def get_movements(limit=200):
     return fetch_df(
-        "SELECT m.id,p.id AS produto_id,p.nome AS produto,m.tipo,m.quantidade,p.unidade,m.usuario_lancamento,m.observacao,m.criado_em FROM movements m INNER JOIN products p ON p.id=m.produto_id ORDER BY m.id DESC"
-        
+        "SELECT m.id,p.id AS produto_id,p.nome AS produto,m.tipo,m.quantidade,p.unidade,m.usuario_lancamento,m.observacao,m.criado_em FROM movements m INNER JOIN products p ON p.id=m.produto_id ORDER BY m.id DESC LIMIT :limite",
+        {"limite": int(limit)},
     )
 
 
@@ -427,7 +511,7 @@ def delete_employee_record(emp_id):
 
 def get_orders(tipo):
     return fetch_df(
-        "SELECT so.id,so.tipo,so.opened_by,m.nome AS maquina,so.machine_id,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id WHERE so.tipo=:tipo ORDER BY so.id DESC",
+        "SELECT so.id,so.tipo,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo ORDER BY so.id DESC",
         {"tipo": tipo},
     )
 
@@ -544,7 +628,7 @@ def get_orders_filtered(
     tipo, machine_id=None, status=None, date_from=None, date_to=None
 ):
     params = {"tipo": tipo}
-    sql = "SELECT so.id,so.tipo,so.opened_by,m.nome AS maquina,so.machine_id,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id WHERE so.tipo=:tipo"
+    sql = "SELECT so.id,so.tipo,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo"
     if machine_id is not None:
         sql += " AND so.machine_id=:machine_id"
         params["machine_id"] = machine_id
@@ -570,13 +654,15 @@ def create_order(
     problem_description,
     status,
     solution_description,
+    centro_custo_id=None,
 ):
     execute(
-        "INSERT INTO service_orders (tipo,opened_by,machine_id,start_datetime,end_datetime,problem_description,status,solution_description,created_at,updated_at) VALUES (:tipo,:opened_by,:machine_id,:start_datetime,:end_datetime,:problem_description,:status,:solution_description,:created_at,:updated_at)",
+        "INSERT INTO service_orders (tipo,opened_by,machine_id,centro_custo_id,start_datetime,end_datetime,problem_description,status,solution_description,created_at,updated_at) VALUES (:tipo,:opened_by,:machine_id,:centro_custo_id,:start_datetime,:end_datetime,:problem_description,:status,:solution_description,:created_at,:updated_at)",
         {
             "tipo": tipo,
             "opened_by": opened_by,
             "machine_id": machine_id,
+            "centro_custo_id": centro_custo_id,
             "start_datetime": start_dt,
             "end_datetime": end_dt,
             "problem_description": problem_description.strip(),
@@ -709,14 +795,32 @@ def logout():
     st.rerun()
 
 
+
+def normalizar_perfil(valor):
+    perfil = str(valor or "").strip().lower()
+    mapa = {
+        "administrador": "administrador",
+        "admin": "administrador",
+        "almoxarifado": "almoxarifado",
+        "operador": "operador",
+        "aprovador": "aprovador",
+        "aprvador": "aprovador",
+        "aprovador de compras": "aprovador",
+    }
+    return mapa.get(perfil, perfil)
+
 def is_admin():
-    return str(user.get("perfil", "")).lower() == "administrador"
+    return normalizar_perfil(user.get("perfil", "")) == "administrador"
 
 def is_almoxarifado():
-    return str(user.get("perfil", "")).lower() == "almoxarifado"
+    return normalizar_perfil(user.get("perfil", "")) == "almoxarifado"
+
+def is_aprovador():
+    return normalizar_perfil(user.get("perfil", "")) == "aprovador"
+
 
 def is_operador():
-    return str(user.get("perfil", "")).lower() == "operador"
+    return normalizar_perfil(user.get("perfil", "")) == "operador"
 
 def can_manage_master_data():
     return is_admin() or is_almoxarifado()
@@ -792,16 +896,19 @@ with st.sidebar:
     st.markdown(f"**{user['nome']}**")
     st.caption(f"Perfil: {user['perfil']} | {user['usuario']}")
     st.markdown("---")
-    common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo","Produtos / Estoque"]
-    almox_menu = []
-    admin_menu = ["Máquinas", "Funcionários", "Usuários", "Auditoria"]
+    common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo"]
+    compras_menu = ["Compras"]
+    almox_menu = ["Produtos / Estoque"] + compras_menu
+    admin_menu = ["Produtos / Estoque", "Máquinas", "Funcionários", "Usuários", "Auditoria"] + compras_menu
 
     if is_admin():
         menu_options = common_menu + admin_menu
     elif is_almoxarifado():
         menu_options = common_menu + almox_menu
+    elif is_aprovador():
+        menu_options = ["Compras"]
     else:
-        menu_options = common_menu
+        menu_options = common_menu + compras_menu
     if st.button("Sair", use_container_width=True):
         logout()
     menu = st.radio("Menu", menu_options)
@@ -812,6 +919,77 @@ app_header(
 )
 
 st.markdown(f"""<div class="section-card" style="padding:0.6rem 1rem;"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><strong>Usuário:</strong> {user["nome"]}</div><div><strong>Perfil:</strong> {user["perfil"]}</div><div><strong>Turno:</strong> Operação online</div><div><strong>Data/Hora:</strong> {datetime.now().strftime("%d/%m/%Y %H:%M")}</div></div></div>""", unsafe_allow_html=True)
+
+
+
+def can_manage_purchases():
+    return is_admin() or is_almoxarifado()
+
+def can_view_purchases():
+    return is_admin() or is_almoxarifado() or is_operador() or is_aprovador()
+
+def preparar_sessao_compras():
+    """Adapta o login do StockPro para o módulo Shop Manager."""
+    perfil_stock = normalizar_perfil(user.get("perfil", ""))
+
+    if perfil_stock == "administrador":
+        perfil_compras = "admin"
+    elif perfil_stock == "almoxarifado":
+        perfil_compras = "almoxarifado"
+    elif perfil_stock == "aprovador":
+        perfil_compras = "aprovador"
+    else:
+        perfil_compras = "operador"
+
+    st.session_state.usuario = user.get("usuario", "")
+    st.session_state.nome = user.get("nome", "")
+    st.session_state.perfil = perfil_compras
+    st.session_state.logado = True
+
+    if "itens_novo_pedido" not in st.session_state:
+        st.session_state.itens_novo_pedido = []
+
+
+def tela_compras_integrada():
+    preparar_sessao_compras()
+    shop_manager.criar_tabelas()
+
+    st.subheader("🛒 Compras / Shop Manager")
+    st.caption("Módulo integrado ao StockPro usando o mesmo login do sistema principal.")
+
+    if shop_manager.email_configurado():
+        st.success("E-mail configurado para notificações de compras.")
+    else:
+        st.info("E-mail não configurado. O módulo funciona normalmente, apenas sem envio automático.")
+
+    perfil_txt = {
+        "admin": "Administrador de compras",
+        "aprovador": "Aprovador / Compras total",
+        "operador": "Operador de compras",
+    }.get(st.session_state.perfil, st.session_state.perfil)
+    st.markdown(f"**Perfil no módulo de compras:** {perfil_txt}")
+
+    menu_compras = st.radio(
+        "Menu de compras",
+        ["Dashboard", "Novo Pedido", "Pedidos", "Notificações", "Produtos", "Fornecedores", "Centro de custo", "Configurações"],
+        horizontal=True,
+    )
+
+    paginas = {
+        "Dashboard": shop_manager.tela_dashboard,
+        "Novo Pedido": shop_manager.tela_novo_pedido,
+        "Pedidos": shop_manager.tela_pedidos,
+        "Notificações": shop_manager.tela_notificacoes,
+        "Produtos": shop_manager.tela_produtos,
+        "Fornecedores": shop_manager.tela_fornecedores,
+        "Centro de custo": shop_manager.tela_centros_custo_orcamento,
+        "Centro de custo / Orçamento": shop_manager.tela_centros_custo_orcamento,
+        "Configurações": shop_manager.tela_configuracoes,
+    }
+    if menu_compras not in paginas:
+        st.error(f"Página de compras não encontrada: {menu_compras}")
+        st.stop()
+    paginas[menu_compras]()
 
 if menu == "Dashboard":
     os_metrics = prepare_orders_metrics(os_df)
@@ -832,6 +1010,14 @@ if menu == "Dashboard":
             products_df["estoque_atual"].sum() if not products_df.empty else 0
         ),
     )
+    if "valor_unitario" in products_df.columns and not products_df.empty:
+        valor_estoque_total = (
+            products_df["estoque_atual"].astype(float)
+            * products_df["valor_unitario"].astype(float)
+        ).sum()
+    else:
+        valor_estoque_total = 0.0
+    st.metric("Valor financeiro do estoque", f"R$ {valor_estoque_total:,.2f}".replace(",", "X").replace(".", ",").replace("X", "."))
 
     c5, c6, c7, c8 = st.columns(4)
     c5.metric("OS abertas", abertas_os)
@@ -860,6 +1046,7 @@ if menu == "Dashboard":
                         "unidade": "Unidade",
                         "estoque_atual": "Estoque atual",
                         "estoque_minimo": "Estoque mínimo",
+                        "valor_unitario": "Valor unitário",
                         "falta_para_minimo": "Falta para mínimo",
                     }
                 ),
@@ -929,6 +1116,10 @@ elif menu == "Meu painel":
             hide_index=True,
         )
 
+elif menu == "Compras":
+    require_permission(can_view_purchases(), "Você não possui acesso ao módulo Compras.")
+    tela_compras_integrada()
+
 elif menu == "Produtos / Estoque":
     require_permission(
         can_view_stock(),
@@ -950,9 +1141,12 @@ elif menu == "Produtos / Estoque":
                 estoque_inicial = c3.number_input("Estoque inicial", min_value=0.0, value=0.0)
                 c4, c5 = st.columns([1, 2])
                 estoque_minimo = c4.number_input("Estoque mínimo", min_value=0.0, value=0.0)
-                descricao = c5.text_area("Descrição")
+                valor_unitario = c5.number_input("Valor unitário inicial", min_value=0.0, value=0.0, step=0.01)
+                centro_custo_id = select_cost_center("Centro de custo do produto", key="cc_prod_novo")
+                descricao = st.text_area("Descrição")
+                
                 if st.form_submit_button("Salvar produto", use_container_width=True):
-                    create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo)
+                    create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo, centro_custo_id, valor_unitario)
                     st.success("Produto cadastrado.")
                     st.rerun()
 
@@ -974,14 +1168,17 @@ elif menu == "Produtos / Estoque":
                 c3, c4 = st.columns(2)
                 c3.number_input("Estoque atual", value=float(row["estoque_atual"]), disabled=True)
                 estoque_minimo = c4.number_input("Estoque mínimo", min_value=0.0, value=float(row["estoque_minimo"]))
+                valor_unitario = st.number_input("Valor unitário médio atual", min_value=0.0, value=float(row.get("valor_unitario", 0) or 0), step=0.01)
+                centro_custo_id = select_cost_center("Centro de custo do produto", key="cc_prod_edit")
                 descricao = st.text_area("Descrição", value="" if pd.isna(row["descricao"]) else str(row["descricao"]))
+                
                 b1, b2 = st.columns(2)
                 with b1:
                     salvar = st.form_submit_button("Atualizar produto", use_container_width=True)
                 with b2:
                     excluir = st.form_submit_button("Excluir produto", use_container_width=True)
                 if salvar:
-                    update_product_record(int(row["id"]), nome, descricao, unidade, estoque_minimo)
+                    update_product_record(int(row["id"]), nome, descricao, unidade, estoque_minimo, centro_custo_id)
                     st.success("Produto atualizado.")
                     st.rerun()
                 if excluir:
@@ -1007,9 +1204,12 @@ elif menu == "Produtos / Estoque":
                     produto = st.selectbox("Produto", list(produto_map.keys()))
                     tipo = st.selectbox("Tipo", ["ENTRADA", "SAIDA"])
                     quantidade = st.number_input("Quantidade", min_value=0.01, value=1.0)
+                    valor_unitario_entrada = 0.0
+                    if tipo == "ENTRADA":
+                        valor_unitario_entrada = st.number_input("Valor unitário da entrada", min_value=0.0, value=0.0, step=0.01)
                     observacao = st.text_input("Observação")
                     if st.form_submit_button("Lançar", use_container_width=True):
-                        register_stock_movement(produto_map[produto], tipo, quantidade, observacao, user["usuario"])
+                        register_stock_movement(produto_map[produto], tipo, quantidade, observacao, user["usuario"], valor_unitario_entrada)
                         st.success("Movimentação registrada.")
                         st.rerun()
 
@@ -1147,6 +1347,7 @@ def order_page(tipo, titulo):
                 data_fim = c3.date_input("Data fim", value=date.today(), key=f"df_{tipo}")
                 hora_fim = c4.time_input("Hora fim", key=f"hf_{tipo}")
                 problema = st.text_area("Descrição do problema")
+                centro_custo_id = select_cost_center("Centro de custo da ordem", key=f"cc_ordem_{tipo}")
                 status = st.selectbox("Status", ["Aberta", "Em andamento", "Finalizada", "Cancelada"], key=f"st_{tipo}")
                 solucao = st.text_area("Descrição da solução")
                 if st.form_submit_button("Salvar ordem", use_container_width=True):
@@ -1159,6 +1360,7 @@ def order_page(tipo, titulo):
                         problema,
                         status,
                         solucao,
+                        centro_custo_id,
                     )
                     st.success("Ordem cadastrada.")
                     st.rerun()
@@ -1349,7 +1551,7 @@ elif menu == "Usuários":
             c3, c4 = st.columns(2)
             email = c3.text_input("E-mail")
             senha = c4.text_input("Senha", type="password")
-            perfil = st.selectbox("Perfil", ["Administrador", "Almoxarifado", "Operador"])
+            perfil = st.selectbox("Perfil", ["Administrador", "Almoxarifado", "Operador", "Aprovador"])
             ativo = st.checkbox("Ativo", value=True)
             if st.form_submit_button("Criar usuário", use_container_width=True):
                 create_user(nome, usuario_login, email, perfil, senha, ativo)
