@@ -240,6 +240,44 @@ def select_cost_center(label="Centro de custo", key=None, allow_empty=True):
     if selected == "Sem centro de custo": return None
     return int(selected.split(" - ")[0].replace("ID ", ""))
 
+
+def select_cost_center_with_current(label="Centro de custo", current_id=None, key=None, allow_empty=True):
+    centros = get_cost_centers()
+    options = []
+
+    if allow_empty:
+        options.append("Sem centro de custo")
+
+    if not centros.empty:
+        options += [f"ID {int(r['id'])} - {r['nome']}" for _, r in centros.iterrows()]
+
+    index = 0
+
+    current_valid = False
+    try:
+        current_valid = current_id is not None and not pd.isna(current_id)
+    except Exception:
+        current_valid = current_id is not None
+
+    if current_valid and not centros.empty:
+        try:
+            current_int = int(float(current_id))
+            for i, opt in enumerate(options):
+                if opt.startswith(f"ID {current_int} -"):
+                    index = i
+                    break
+        except Exception:
+            index = 0
+
+    selected = st.selectbox(label, options or ["Sem centro de custo"], index=index, key=key)
+
+    if selected == "Sem centro de custo":
+        return None
+
+    return int(selected.split(" - ")[0].replace("ID ", ""))
+
+
+
 def get_users():
     return fetch_df(
         "SELECT id,nome,usuario,email,perfil,ativo,criado_em,atualizado_em FROM users ORDER BY nome"
@@ -388,13 +426,14 @@ def register_stock_movement(produto_id, tipo, quantidade, observacao, usuario_la
     )
 
 
-def update_product_record(product_id, nome, descricao, unidade, estoque_minimo, valor_unitario=0):
+def update_product_record(product_id, nome, descricao, unidade, estoque_minimo, centro_custo_id=None, valor_unitario=0):
     execute(
         """UPDATE products
               SET nome=:nome,
                   descricao=:descricao,
                   unidade=:unidade,
                   estoque_minimo=:estoque_minimo,
+                  centro_custo_id=:centro_custo_id,
                   valor_unitario=:valor_unitario,
                   atualizado_em=:agora
             WHERE id=:id""",
@@ -404,6 +443,7 @@ def update_product_record(product_id, nome, descricao, unidade, estoque_minimo, 
             "descricao": descricao.strip(),
             "unidade": unidade,
             "estoque_minimo": float(estoque_minimo),
+            "centro_custo_id": centro_custo_id,
             "valor_unitario": float(valor_unitario or 0),
             "agora": datetime.now(),
         },
@@ -897,7 +937,7 @@ with st.sidebar:
     st.caption(f"Perfil: {user['perfil']} | {user['usuario']}")
     st.markdown("---")
     common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo"]
-    compras_menu = ["Compras"]
+    compras_menu = ["Compras", "Serviços"]
     almox_menu = ["Produtos / Estoque"] + compras_menu
     admin_menu = ["Produtos / Estoque", "Máquinas", "Funcionários", "Usuários", "Auditoria"] + compras_menu
 
@@ -906,7 +946,7 @@ with st.sidebar:
     elif is_almoxarifado():
         menu_options = common_menu + almox_menu
     elif is_aprovador():
-        menu_options = ["Compras"]
+        menu_options = ["Compras", "Serviços"]
     else:
         menu_options = common_menu + compras_menu
     if st.button("Sair", use_container_width=True):
@@ -991,7 +1031,17 @@ def tela_compras_integrada():
         st.stop()
     paginas[menu_compras]()
 
-if menu == "Dashboard":
+
+def tela_servicos_integrada():
+    preparar_sessao_compras()
+    shop_manager.criar_tabelas()
+    shop_manager.tela_servicos_integrada()
+
+if menu == "Serviços":
+    require_permission(can_view_purchases(), "Você não possui acesso ao módulo Serviços.")
+    tela_servicos_integrada()
+
+elif menu == "Dashboard":
     os_metrics = prepare_orders_metrics(os_df)
     pm_metrics = prepare_orders_metrics(pm_df)
 
@@ -1139,14 +1189,33 @@ elif menu == "Produtos / Estoque":
                 nome = c1.text_input("Nome")
                 unidade = c2.selectbox("Unidade", ["UN", "KG", "PC", "M", "L"])
                 estoque_inicial = c3.number_input("Estoque inicial", min_value=0.0, value=0.0)
+
                 c4, c5 = st.columns([1, 2])
                 estoque_minimo = c4.number_input("Estoque mínimo", min_value=0.0, value=0.0)
-                valor_unitario = c5.number_input("Valor unitário inicial", min_value=0.0, value=0.0, step=0.01)
-                centro_custo_id = select_cost_center("Centro de custo do produto", key="cc_prod_novo")
-                descricao = st.text_area("Descrição")
-                
+                descricao = c5.text_area("Descrição")
+
+                valor_unitario = st.number_input(
+                    "Valor unitário inicial",
+                    min_value=0.0,
+                    value=0.0,
+                    step=0.01,
+                )
+
+                centro_custo_id = select_cost_center(
+                    "Centro de custo do produto",
+                    key="cc_prod_novo",
+                )
+
                 if st.form_submit_button("Salvar produto", use_container_width=True):
-                    create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo, centro_custo_id, valor_unitario)
+                    create_product(
+                        nome,
+                        descricao,
+                        unidade,
+                        estoque_inicial,
+                        estoque_minimo,
+                        centro_custo_id,
+                        valor_unitario,
+                    )
                     st.success("Produto cadastrado.")
                     st.rerun()
 
@@ -1156,31 +1225,83 @@ elif menu == "Produtos / Estoque":
         elif products_df.empty:
             st.info("Nenhum produto cadastrado.")
         else:
-            prod_map = {f"ID {int(r['id'])} - {r['nome']}": r for _, r in products_df.iterrows()}
+            prod_map = {
+                f"ID {int(r['id'])} - {r['nome']}": r
+                for _, r in products_df.iterrows()
+            }
+
             sel = st.selectbox("Selecionar produto", list(prod_map.keys()))
             row = prod_map[sel]
+
             unidades = ["UN", "KG", "PC", "M", "L"]
             unidade_atual = row["unidade"] if row["unidade"] in unidades else "UN"
+
             with st.form("editar_produto"):
                 c1, c2 = st.columns(2)
                 nome = c1.text_input("Nome", value=str(row["nome"]))
-                unidade = c2.selectbox("Unidade", unidades, index=unidades.index(unidade_atual))
+                unidade = c2.selectbox(
+                    "Unidade",
+                    unidades,
+                    index=unidades.index(unidade_atual),
+                )
+
                 c3, c4 = st.columns(2)
-                c3.number_input("Estoque atual", value=float(row["estoque_atual"]), disabled=True)
-                estoque_minimo = c4.number_input("Estoque mínimo", min_value=0.0, value=float(row["estoque_minimo"]))
-                valor_unitario = st.number_input("Valor unitário médio atual", min_value=0.0, value=float(row.get("valor_unitario", 0) or 0), step=0.01)
-                centro_custo_id = select_cost_center("Centro de custo do produto", key="cc_prod_edit")
-                descricao = st.text_area("Descrição", value="" if pd.isna(row["descricao"]) else str(row["descricao"]))
-                
+                c3.number_input(
+                    "Estoque atual",
+                    value=float(row["estoque_atual"] or 0),
+                    disabled=True,
+                )
+                estoque_minimo = c4.number_input(
+                    "Estoque mínimo",
+                    min_value=0.0,
+                    value=float(row["estoque_minimo"] or 0),
+                )
+
+                valor_unitario = st.number_input(
+                    "Valor unitário médio atual",
+                    min_value=0.0,
+                    value=float(row.get("valor_unitario", 0) or 0),
+                    step=0.01,
+                )
+
+                descricao = st.text_area(
+                    "Descrição",
+                    value="" if pd.isna(row["descricao"]) else str(row["descricao"]),
+                )
+
+                centro_custo_id = select_cost_center_with_current(
+                    "Centro de custo do produto",
+                    row.get("centro_custo_id", None),
+                    key=f"cc_prod_edit_{int(row['id'])}",
+                )
+
                 b1, b2 = st.columns(2)
+
                 with b1:
-                    salvar = st.form_submit_button("Atualizar produto", use_container_width=True)
+                    salvar = st.form_submit_button(
+                        "Atualizar produto",
+                        use_container_width=True,
+                    )
+
                 with b2:
-                    excluir = st.form_submit_button("Excluir produto", use_container_width=True)
+                    excluir = st.form_submit_button(
+                        "Excluir produto",
+                        use_container_width=True,
+                    )
+
                 if salvar:
-                    update_product_record(int(row["id"]), nome, descricao, unidade, estoque_minimo, centro_custo_id)
+                    update_product_record(
+                        int(row["id"]),
+                        nome,
+                        descricao,
+                        unidade,
+                        estoque_minimo,
+                        centro_custo_id,
+                        valor_unitario,
+                    )
                     st.success("Produto atualizado.")
                     st.rerun()
+
                 if excluir:
                     try:
                         delete_product_record(int(row["id"]))
@@ -1201,15 +1322,31 @@ elif menu == "Produtos / Estoque":
                         f"ID {int(r['id'])} - {r['nome']} | saldo: {r['estoque_atual']} {r['unidade']}": int(r["id"])
                         for _, r in products_df.iterrows()
                     }
+
                     produto = st.selectbox("Produto", list(produto_map.keys()))
                     tipo = st.selectbox("Tipo", ["ENTRADA", "SAIDA"])
                     quantidade = st.number_input("Quantidade", min_value=0.01, value=1.0)
+
                     valor_unitario_entrada = 0.0
                     if tipo == "ENTRADA":
-                        valor_unitario_entrada = st.number_input("Valor unitário da entrada", min_value=0.0, value=0.0, step=0.01)
+                        valor_unitario_entrada = st.number_input(
+                            "Valor unitário da entrada",
+                            min_value=0.0,
+                            value=0.0,
+                            step=0.01,
+                        )
+
                     observacao = st.text_input("Observação")
+
                     if st.form_submit_button("Lançar", use_container_width=True):
-                        register_stock_movement(produto_map[produto], tipo, quantidade, observacao, user["usuario"], valor_unitario_entrada)
+                        register_stock_movement(
+                            produto_map[produto],
+                            tipo,
+                            quantidade,
+                            observacao,
+                            user["usuario"],
+                            valor_unitario_entrada,
+                        )
                         st.success("Movimentação registrada.")
                         st.rerun()
 
@@ -1217,8 +1354,27 @@ elif menu == "Produtos / Estoque":
         if products_df.empty:
             st.info("Nenhum produto cadastrado.")
         else:
+            df_view = products_df.copy()
+            if "valor_unitario" in df_view.columns:
+                df_view["valor_total"] = (
+                    df_view["estoque_atual"].astype(float)
+                    * df_view["valor_unitario"].astype(float)
+                )
+
             st.dataframe(
-                products_df.rename(columns={"id": "ID", "nome": "Produto", "descricao": "Descrição", "unidade": "Unidade", "estoque_atual": "Estoque atual", "estoque_minimo": "Estoque mínimo"}),
+                df_view.rename(
+                    columns={
+                        "id": "ID",
+                        "nome": "Produto",
+                        "descricao": "Descrição",
+                        "unidade": "Unidade",
+                        "estoque_atual": "Estoque atual",
+                        "estoque_minimo": "Estoque mínimo",
+                        "valor_unitario": "Valor unitário",
+                        "valor_total": "Valor total",
+                        "centro_custo": "Centro de custo",
+                    }
+                ),
                 use_container_width=True,
                 hide_index=True,
             )
@@ -1229,7 +1385,19 @@ elif menu == "Produtos / Estoque":
             st.info("Nenhuma movimentação registrada.")
         else:
             st.dataframe(
-                mov_df.rename(columns={"id": "ID", "produto_id": "ID produto", "produto": "Produto", "tipo": "Tipo", "quantidade": "Quantidade", "unidade": "Unidade", "usuario_lancamento": "Usuário", "observacao": "Observação", "criado_em": "Data/hora"}),
+                mov_df.rename(
+                    columns={
+                        "id": "ID",
+                        "produto_id": "ID produto",
+                        "produto": "Produto",
+                        "tipo": "Tipo",
+                        "quantidade": "Quantidade",
+                        "unidade": "Unidade",
+                        "usuario_lancamento": "Usuário",
+                        "observacao": "Observação",
+                        "criado_em": "Data/hora",
+                    }
+                ),
                 use_container_width=True,
                 hide_index=True,
             )

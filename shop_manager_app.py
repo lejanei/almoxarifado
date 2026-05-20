@@ -670,6 +670,359 @@ def tela_centros_custo_orcamento():
         else:
             st.success('Orçamento dentro do limite.')
 
+
+
+# ===== Páginas de Serviços de Terceiros =====
+
+def mensagem_servico_criado(numero, usuario, fornecedor, valor, prioridade, centro_custo, tipo_orcamento):
+    return f"""🧰 NOVO SERVIÇO DE TERCEIRO
+
+Serviço: {numero}
+Fornecedor: {fornecedor}
+Centro de custo: {centro_custo}
+Tipo: {tipo_orcamento}
+Valor: {valor}
+Prioridade: {prioridade}
+Criado por: {usuario}
+"""
+
+
+def mensagem_status_servico(numero, status, usuario, prioridade):
+    return f"""🧰 ATUALIZAÇÃO DE SERVIÇO
+
+Serviço: {numero}
+Prioridade: {prioridade}
+
+Novo status: {status}
+Alterado por: {usuario}
+"""
+
+
+def notificar_servico(tipo, servico_id, numero, msg, usuario, anexo=None, legenda='', enviar_anexos_telegram=False):
+    assunto = f"StockPro Serviços - {tipo} - {numero}"
+
+    try:
+        ok_email = enviar_email_notificacao(assunto, msg, anexo, legenda)
+    except Exception as erro_email:
+        print("Erro email serviço:", erro_email)
+        ok_email = False
+
+    try:
+        ok_msg_telegram = enviar_telegram(msg)
+    except Exception as erro_telegram:
+        print("Erro Telegram serviço:", erro_telegram)
+        ok_msg_telegram = False
+
+    ok_anexos = True
+    if enviar_anexos_telegram:
+        anexos = carregar_anexos_servico(servico_id)
+        if not anexos.empty:
+            for anexo in anexos.itertuples():
+                try:
+                    ok_doc = enviar_telegram_documento(anexo.caminho, f"📎 Anexo do serviço {numero}: {anexo.nome_arquivo}")
+                    if not ok_doc:
+                        ok_anexos = False
+                except Exception as erro_doc:
+                    print("Erro anexo Telegram serviço:", erro_doc)
+                    ok_anexos = False
+
+    status_envio = []
+    status_envio.append("Email enviado" if ok_email else "Email não enviado")
+    status_envio.append("Telegram enviado" if ok_msg_telegram and ok_anexos else "Telegram não enviado ou anexo com falha")
+    registrar_notificacao(tipo, servico_id, numero, msg, " | ".join(status_envio), usuario)
+
+
+
+
+def verificar_alerta_orcamento_servico(servico_id, numero_servico=''):
+    serv = buscar_servico(servico_id)
+    if not serv:
+        return
+
+    data_ref = pd.to_datetime(serv.get('data'), errors='coerce')
+    if pd.isna(data_ref):
+        data_ref = datetime.now()
+
+    centro_custo_id = serv.get('centro_custo_id')
+    tipo_orcamento = serv.get('tipo_orcamento') or 'OPEX'
+    resumo = resumo_orcamento_mes(data_ref.year, data_ref.month, centro_custo_id, tipo_orcamento)
+
+    if resumo["valor_orcado"] <= 0:
+        msg = f"""⚠️ SERVIÇO APROVADO SEM ORÇAMENTO DEFINIDO
+
+Serviço: {numero_servico}
+Centro de custo: {serv.get('centro_custo') or 'Sem centro de custo'}
+Tipo: {tipo_orcamento}
+Mês: {data_ref.month:02d}/{data_ref.year}
+
+Valor do serviço: {valor_moeda(float(serv.get('valor_total') or 0))}
+Nenhum orçamento mensal foi definido para este centro de custo/tipo.
+"""
+        try:
+            enviar_telegram(msg)
+        except Exception as e:
+            print("Erro alerta orçamento serviço Telegram:", e)
+        try:
+            enviar_email_notificacao("Serviço aprovado sem orçamento definido", msg)
+        except Exception as e:
+            print("Erro alerta orçamento serviço e-mail:", e)
+        return
+
+    if resumo["percentual"] >= resumo["alerta_percentual"]:
+        msg = f"""⚠️ ALERTA DE ORÇAMENTO - SERVIÇOS
+
+Serviço aprovado: {numero_servico}
+Centro de custo: {serv.get('centro_custo') or 'Sem centro de custo'}
+Tipo: {tipo_orcamento}
+Mês: {data_ref.month:02d}/{data_ref.year}
+
+Orçamento: {valor_moeda(resumo['valor_orcado'])}
+Compras: {valor_moeda(resumo.get('compras', 0))}
+Serviços: {valor_moeda(resumo.get('servicos', 0))}
+Consumido total: {valor_moeda(resumo['consumido'])}
+Saldo: {valor_moeda(resumo['saldo'])}
+Uso: {resumo['percentual']:.1f}%
+
+Limite de alerta: {resumo['alerta_percentual']:.1f}%
+"""
+        try:
+            enviar_telegram(msg)
+        except Exception as e:
+            print("Erro alerta orçamento serviço Telegram:", e)
+        try:
+            enviar_email_notificacao("Alerta de orçamento - Serviços", msg)
+        except Exception as e:
+            print("Erro alerta orçamento serviço e-mail:", e)
+
+
+def tela_servicos_dashboard():
+    st.subheader("📊 Dashboard de Serviços")
+    hoje = datetime.now()
+    servicos = carregar_servicos()
+
+    if servicos.empty:
+        st.info("Nenhum serviço cadastrado.")
+        return
+
+    df = servicos.copy()
+    df["data"] = pd.to_datetime(df["data"], errors="coerce")
+    mes_df = df[(df["data"].dt.year == hoje.year) & (df["data"].dt.month == hoje.month)].copy()
+
+    st.caption(f"Indicadores do mês vigente: {hoje.strftime('%m/%Y')}")
+
+    total_mes = pd.to_numeric(mes_df["valor_total"], errors="coerce").fillna(0).sum() if not mes_df.empty else 0
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Serviços no mês", len(mes_df))
+    c2.metric("Valor no mês", valor_moeda(total_mes))
+    c3.metric("Abertos", len(mes_df[mes_df["status"].isin(["Aberto", "Aprovado", "Executado"])]) if not mes_df.empty else 0)
+    c4.metric("Finalizados", len(mes_df[mes_df["status"].isin(["Finalizado"])]) if not mes_df.empty else 0)
+
+    c5, c6 = st.columns(2)
+    with c5:
+        st.markdown("### Por status")
+        if not mes_df.empty:
+            st.dataframe(mes_df.groupby("status").size().reset_index(name="total"), use_container_width=True, hide_index=True)
+        else:
+            st.info("Sem serviços no mês.")
+
+    with c6:
+        st.markdown("### Por tipo de orçamento")
+        if not mes_df.empty and "tipo_orcamento" in mes_df.columns:
+            tipo_df = mes_df.groupby("tipo_orcamento")["valor_total"].sum().reset_index()
+            tipo_df["valor_total"] = tipo_df["valor_total"].apply(valor_moeda)
+            st.dataframe(tipo_df, use_container_width=True, hide_index=True)
+        else:
+            st.info("Sem serviços no mês.")
+
+    st.markdown("### Últimos serviços do mês")
+    if not mes_df.empty:
+        st.dataframe(
+            mes_df[["numero", "data", "fornecedor", "centro_custo", "tipo_orcamento", "status", "prioridade", "valor_total"]].head(30),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+
+def tela_novo_servico():
+    st.subheader("🧰 Novo Serviço de Terceiro")
+    if st.session_state.perfil not in ["admin", "almoxarifado", "aprovador"]:
+        st.warning("Seu perfil possui acesso somente para consulta.")
+        return
+
+    fornecedores = carregar_fornecedores()
+    if fornecedores.empty:
+        st.warning("Cadastre pelo menos um fornecedor antes de criar serviços.")
+        return
+
+    with st.form("novo_servico", clear_on_submit=True):
+        c1, c2, c3 = st.columns(3)
+        data_servico = c1.date_input("Data do serviço", value=date.today())
+        fornecedor_nome = c2.selectbox("Fornecedor", fornecedores.nome.tolist())
+        prioridade = c3.selectbox("Prioridade", ["Baixa", "Normal", "Alta", "Urgente"], index=1)
+
+        centro_custo_id = seletor_centro_custo("Centro de custo", key="cc_novo_servico")
+        st.caption("O tipo OPEX/CAPEX será puxado automaticamente do orçamento mensal do centro de custo.")
+
+        descricao = st.text_area("Descrição do serviço")
+        valor_total = st.number_input("Valor do serviço", min_value=0.0, value=0.0, step=100.0)
+        observacao = st.text_area("Observação")
+        anexos = st.file_uploader("Anexos do serviço/orçamento", accept_multiple_files=True)
+
+        if st.form_submit_button("Salvar serviço", use_container_width=True):
+            if not descricao.strip():
+                st.error("Informe a descrição do serviço.")
+            elif valor_total <= 0:
+                st.error("Informe o valor do serviço.")
+            else:
+                fornecedor_id = int(fornecedores[fornecedores.nome == fornecedor_nome].id.iloc[0])
+                servico_id, numero, tipo_orcamento = criar_servico(
+                    data_servico,
+                    fornecedor_id,
+                    centro_custo_id,
+                    descricao,
+                    valor_total,
+                    prioridade,
+                    observacao,
+                    st.session_state.usuario,
+                )
+
+                adir = Path("shop_data") / "servicos_anexos" / numero
+                adir.mkdir(parents=True, exist_ok=True)
+
+                for arq in anexos:
+                    dest = adir / arq.name
+                    dest.write_bytes(arq.getbuffer())
+                    inserir_anexo_servico(servico_id, arq.name, str(dest), st.session_state.usuario)
+
+                msg = mensagem_servico_criado(
+                    numero,
+                    st.session_state.usuario,
+                    fornecedor_nome,
+                    valor_moeda(valor_total),
+                    prioridade,
+                    nome_centro_custo(centro_custo_id),
+                    tipo_orcamento,
+                )
+                notificar_servico("Serviço criado", servico_id, numero, msg, st.session_state.usuario, None, "", True)
+                st.success(f"Serviço {numero} cadastrado.")
+                st.rerun()
+
+
+def tela_servicos():
+    st.subheader("🧰 Serviços")
+    servicos = carregar_servicos()
+    if servicos.empty:
+        st.info("Nenhum serviço cadastrado.")
+        return
+
+    servicos_view = servicos.copy()
+    filtros = st.columns(4)
+    status_f = filtros[0].selectbox("Status", ["Todos"] + sorted(servicos_view["status"].dropna().unique().tolist()))
+    tipo_f = filtros[1].selectbox("Tipo", ["Todos"] + sorted(servicos_view["tipo_orcamento"].dropna().unique().tolist()))
+    cc_f = filtros[2].selectbox("Centro de custo", ["Todos"] + sorted(servicos_view["centro_custo"].dropna().unique().tolist()))
+    mes_atual = datetime.now().month
+    mes_f = filtros[3].selectbox("Mês", ["Todos"] + list(range(1, 13)), index=mes_atual)
+
+    df = servicos_view.copy()
+    df["data"] = pd.to_datetime(df["data"], errors="coerce")
+
+    if status_f != "Todos":
+        df = df[df["status"] == status_f]
+    if tipo_f != "Todos":
+        df = df[df["tipo_orcamento"] == tipo_f]
+    if cc_f != "Todos":
+        df = df[df["centro_custo"] == cc_f]
+    if mes_f != "Todos":
+        df = df[df["data"].dt.month == int(mes_f)]
+
+    st.dataframe(
+        df[["id", "numero", "data", "fornecedor", "centro_custo", "tipo_orcamento", "descricao", "valor_total", "status", "prioridade", "criado_por"]],
+        use_container_width=True,
+        hide_index=True,
+    )
+
+    mapa = {f"ID {int(r.id)} - {r.numero} - {r.fornecedor} - {valor_moeda(float(r.valor_total))}": int(r.id) for r in df.itertuples()}
+    if not mapa:
+        return
+
+    servico_id = st.selectbox("Selecionar serviço", list(mapa.keys()))
+    sid = mapa[servico_id]
+    serv = buscar_servico(sid)
+
+    st.markdown("### Detalhes")
+    st.write(f"**Número:** {serv['numero']}")
+    st.write(f"**Fornecedor:** {serv.get('fornecedor')}")
+    st.write(f"**Centro de custo:** {serv.get('centro_custo') or 'Sem centro de custo'}")
+    st.write(f"**Tipo:** {serv.get('tipo_orcamento')}")
+    st.write(f"**Status:** {serv.get('status')}")
+    st.write(f"**Valor:** {valor_moeda(float(serv.get('valor_total') or 0))}")
+    st.write(f"**Descrição:** {serv.get('descricao')}")
+
+    anexos = carregar_anexos_servico(sid)
+    st.markdown("### Anexos")
+    if anexos.empty:
+        st.info("Nenhum anexo.")
+    else:
+        for a in anexos.itertuples():
+            p = Path(a.caminho)
+            if p.exists():
+                with open(p, "rb") as f:
+                    st.download_button(f"Baixar {a.nome_arquivo}", f, file_name=a.nome_arquivo, key=f"serv_anexo_{a.id}")
+
+    st.divider()
+    st.markdown("### Status")
+    c1, c2, c3, c4 = st.columns(4)
+
+    def mudar(ns, legenda):
+        alterar_status_servico(sid, ns, st.session_state.usuario)
+        msg = mensagem_status_servico(serv["numero"], ns, st.session_state.usuario, serv["prioridade"])
+        notificar_servico(f"Status {ns}", sid, serv["numero"], msg, st.session_state.usuario, None, legenda, False)
+        if ns == "Aprovado":
+            verificar_alerta_orcamento_servico(sid, serv["numero"])
+        st.success(f"Serviço marcado como {ns}.")
+        st.rerun()
+
+    with c1:
+        if st.button("✅ Aprovado", use_container_width=True):
+            mudar("Aprovado", f"✅ Serviço {serv['numero']} aprovado")
+    with c2:
+        if st.button("🧰 Executado", use_container_width=True):
+            mudar("Executado", f"🧰 Serviço {serv['numero']} executado")
+    with c3:
+        if st.button("🏁 Finalizado", use_container_width=True):
+            mudar("Finalizado", f"🏁 Serviço {serv['numero']} finalizado")
+    with c4:
+        if st.button("❌ Cancelado", use_container_width=True):
+            mudar("Cancelado", f"❌ Serviço {serv['numero']} cancelado")
+
+    if st.session_state.perfil in ["admin", "aprovador"]:
+        if st.button("🗑️ Excluir serviço", use_container_width=True):
+            excluir_servico(sid)
+            msg = f"🗑️ SERVIÇO EXCLUÍDO\n\nServiço: {serv['numero']}\nExcluído por: {st.session_state.usuario}"
+            notificar_servico("Serviço excluído", sid, serv["numero"], msg, st.session_state.usuario)
+            st.success("Serviço excluído.")
+            st.rerun()
+
+
+def tela_servicos_integrada():
+    criar_tabelas()
+    st.subheader("🧰 Serviços de terceiros")
+    st.caption("Controle de serviços usando fornecedores, centro de custo, orçamento e notificações do sistema.")
+
+    menu_servicos = st.radio(
+        "Menu de serviços",
+        ["Dashboard", "Novo Serviço", "Serviços"],
+        horizontal=True,
+    )
+
+    paginas = {
+        "Dashboard": tela_servicos_dashboard,
+        "Novo Serviço": tela_novo_servico,
+        "Serviços": tela_servicos,
+    }
+
+    paginas[menu_servicos]()
+
 def main():
     criar_tabelas(); st.set_page_config(page_title='Gerenciador de Compras',layout='wide')
     if 'logado' not in st.session_state: st.session_state.logado=False

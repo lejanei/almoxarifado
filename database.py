@@ -32,6 +32,49 @@ def carregar_df(sql, params=None):
 
 
 def criar_tabelas():
+    executar("""CREATE TABLE IF NOT EXISTS servicos_terceiros (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        numero VARCHAR(50),
+        data DATE NOT NULL,
+        fornecedor_id INT NOT NULL,
+        centro_custo_id INT NULL,
+        tipo_orcamento VARCHAR(20) NOT NULL DEFAULT 'OPEX',
+        descricao TEXT NOT NULL,
+        valor_total DECIMAL(15,2) NOT NULL DEFAULT 0,
+        status VARCHAR(50) NOT NULL DEFAULT 'Aberto',
+        prioridade VARCHAR(50) NOT NULL DEFAULT 'Normal',
+        observacao LONGTEXT,
+        criado_por VARCHAR(100),
+        aprovado_por VARCHAR(100),
+        data_aprovacao VARCHAR(50),
+        executado_por VARCHAR(100),
+        data_execucao VARCHAR(50),
+        finalizado_por VARCHAR(100),
+        data_finalizacao VARCHAR(50),
+        cancelado_por VARCHAR(100),
+        data_cancelamento VARCHAR(50),
+        criado_em VARCHAR(50),
+        atualizado_em VARCHAR(50),
+        INDEX idx_serv_data (data),
+        INDEX idx_serv_status (status),
+        INDEX idx_serv_fornecedor (fornecedor_id),
+        INDEX idx_serv_cc (centro_custo_id),
+        CONSTRAINT fk_serv_fornecedor FOREIGN KEY (fornecedor_id) REFERENCES fornecedores(id) ON DELETE RESTRICT,
+        CONSTRAINT fk_serv_cc FOREIGN KEY (centro_custo_id) REFERENCES centros_custo(id) ON DELETE SET NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+    executar("""CREATE TABLE IF NOT EXISTS servico_anexos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        servico_id INT NOT NULL,
+        nome_arquivo VARCHAR(255) NOT NULL,
+        caminho VARCHAR(500) NOT NULL,
+        enviado_por VARCHAR(100),
+        data_envio VARCHAR(50),
+        INDEX idx_serv_anexos (servico_id),
+        CONSTRAINT fk_serv_anexos FOREIGN KEY (servico_id) REFERENCES servicos_terceiros(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+
     executar("""CREATE TABLE IF NOT EXISTS orcamentos_gerais_mensais (
         id INT AUTO_INCREMENT PRIMARY KEY,
         ano INT NOT NULL,
@@ -645,6 +688,219 @@ def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento='OPEX'):
         "tipo_orcamento": tipo,
         "valor_total": valor_total,
         "distribuido": distribuido,
+        "consumido": consumido,
+        "saldo_distribuir": saldo_distribuir,
+        "saldo_real": saldo_real,
+        "percentual_consumido": percentual_consumido,
+        "percentual_distribuido": percentual_distribuido,
+        "alerta_percentual": alerta_percentual,
+    }
+
+
+# ===== Serviços de terceiros =====
+
+def formatar_servico_id(servico_id):
+    return f"SERV-{int(servico_id):05d}"
+
+
+def criar_servico(data_servico, fornecedor_id, centro_custo_id, descricao, valor_total, prioridade, observacao, usuario):
+    tipo_orcamento = obter_tipo_orcamento_para_pedido(
+        data_servico.year if hasattr(data_servico, "year") else int(str(data_servico)[:4]),
+        data_servico.month if hasattr(data_servico, "month") else int(str(data_servico)[5:7]),
+        centro_custo_id,
+    )
+    log = f"[{agora()}] Serviço criado por {usuario}."
+    obs_final = f"{observacao}\n\n{log}" if observacao else log
+
+    with engine.begin() as conn:
+        res = conn.execute(
+            text("""INSERT INTO servicos_terceiros
+                (data, fornecedor_id, centro_custo_id, tipo_orcamento, descricao, valor_total, status, prioridade, observacao, criado_por, criado_em, atualizado_em)
+                VALUES (:data, :fornecedor_id, :centro_custo_id, :tipo_orcamento, :descricao, :valor_total, 'Aberto', :prioridade, :observacao, :usuario, :criado, :atualizado)"""),
+            {
+                "data": str(data_servico),
+                "fornecedor_id": int(fornecedor_id),
+                "centro_custo_id": int(centro_custo_id) if centro_custo_id else None,
+                "tipo_orcamento": tipo_orcamento,
+                "descricao": descricao,
+                "valor_total": float(valor_total),
+                "prioridade": prioridade,
+                "observacao": obs_final,
+                "usuario": usuario,
+                "criado": agora(),
+                "atualizado": agora(),
+            },
+        )
+        servico_id = res.lastrowid
+        numero = formatar_servico_id(servico_id)
+        conn.execute(text("UPDATE servicos_terceiros SET numero=:numero WHERE id=:id"), {"numero": numero, "id": servico_id})
+
+    return servico_id, numero, tipo_orcamento
+
+
+def carregar_servicos():
+    return carregar_df("""SELECT s.id, s.numero, s.data, f.nome AS fornecedor,
+        s.fornecedor_id, s.centro_custo_id, cc.nome AS centro_custo,
+        s.tipo_orcamento, s.descricao, s.valor_total, s.status, s.prioridade,
+        s.observacao, s.criado_por, s.aprovado_por, s.data_aprovacao,
+        s.executado_por, s.data_execucao, s.finalizado_por, s.data_finalizacao,
+        s.cancelado_por, s.data_cancelamento, s.criado_em, s.atualizado_em
+        FROM servicos_terceiros s
+        LEFT JOIN fornecedores f ON f.id=s.fornecedor_id
+        LEFT JOIN centros_custo cc ON cc.id=s.centro_custo_id
+        ORDER BY s.id DESC""")
+
+
+def buscar_servico(servico_id):
+    return buscar_um("""SELECT s.*, f.nome AS fornecedor, cc.nome AS centro_custo
+        FROM servicos_terceiros s
+        LEFT JOIN fornecedores f ON f.id=s.fornecedor_id
+        LEFT JOIN centros_custo cc ON cc.id=s.centro_custo_id
+        WHERE s.id=:id""", {"id": int(servico_id)})
+
+
+def alterar_status_servico(servico_id, novo_status, usuario):
+    serv = buscar_servico(servico_id)
+    if not serv:
+        return
+    obs = (serv.get("observacao") or "") + f"\n\n[{agora()}] Status alterado de {serv.get('status')} para {novo_status} por {usuario}."
+    campos = {
+        "Aprovado": ("aprovado_por", "data_aprovacao"),
+        "Executado": ("executado_por", "data_execucao"),
+        "Finalizado": ("finalizado_por", "data_finalizacao"),
+        "Cancelado": ("cancelado_por", "data_cancelamento"),
+    }
+    if novo_status in campos:
+        usuario_col, data_col = campos[novo_status]
+        executar(
+            f"UPDATE servicos_terceiros SET status=:status, observacao=:obs, {usuario_col}=:usuario, {data_col}=:data, atualizado_em=:data WHERE id=:id",
+            {"status": novo_status, "obs": obs, "usuario": usuario, "data": agora(), "id": int(servico_id)},
+        )
+    else:
+        executar(
+            "UPDATE servicos_terceiros SET status=:status, observacao=:obs, atualizado_em=:data WHERE id=:id",
+            {"status": novo_status, "obs": obs, "data": agora(), "id": int(servico_id)},
+        )
+
+
+def excluir_servico(servico_id):
+    executar("DELETE FROM servicos_terceiros WHERE id=:id", {"id": int(servico_id)})
+
+
+def inserir_anexo_servico(servico_id, nome_arquivo, caminho, usuario):
+    executar(
+        "INSERT INTO servico_anexos (servico_id,nome_arquivo,caminho,enviado_por,data_envio) VALUES (:servico_id,:nome,:caminho,:usuario,:data)",
+        {"servico_id": int(servico_id), "nome": nome_arquivo, "caminho": caminho, "usuario": usuario, "data": agora()},
+    )
+
+
+def carregar_anexos_servico(servico_id):
+    return carregar_df("SELECT * FROM servico_anexos WHERE servico_id=:id ORDER BY id DESC", {"id": int(servico_id)})
+
+
+def total_servicos_mes(ano, mes, centro_custo_id=None, tipo_orcamento=None):
+    inicio = f"{int(ano):04d}-{int(mes):02d}-01"
+    fim = f"{int(ano)+1:04d}-01-01" if int(mes) == 12 else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    sql = """
+        SELECT COALESCE(SUM(valor_total), 0) AS total
+        FROM servicos_terceiros
+        WHERE data >= :inicio AND data < :fim
+          AND status NOT IN ('Cancelado')
+    """
+    params = {"inicio": inicio, "fim": fim}
+    if centro_custo_id:
+        sql += " AND centro_custo_id=:cc"
+        params["cc"] = int(centro_custo_id)
+    if tipo_orcamento:
+        sql += " AND tipo_orcamento=:tipo"
+        params["tipo"] = str(tipo_orcamento).upper()
+    row = buscar_um(sql, params)
+    return float(row["total"] or 0) if row else 0.0
+
+
+# ===== Overrides Serviços x Orçamento =====
+
+def total_servicos_mes(ano, mes, centro_custo_id=None, tipo_orcamento=None):
+    """Total de serviços que devem consumir orçamento.
+
+    Regra:
+    - Serviço só consome orçamento após aprovação.
+    - Status considerados no consumo: Aprovado, Executado, Finalizado.
+    - Cancelado e Aberto não consomem.
+    """
+    inicio = f"{int(ano):04d}-{int(mes):02d}-01"
+    fim = f"{int(ano)+1:04d}-01-01" if int(mes) == 12 else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    sql = """
+        SELECT COALESCE(SUM(valor_total), 0) AS total
+        FROM servicos_terceiros
+        WHERE data >= :inicio AND data < :fim
+          AND status IN ('Aprovado', 'Executado', 'Finalizado')
+    """
+    params = {"inicio": inicio, "fim": fim}
+    if centro_custo_id:
+        sql += " AND centro_custo_id=:cc"
+        params["cc"] = int(centro_custo_id)
+    if tipo_orcamento:
+        sql += " AND tipo_orcamento=:tipo"
+        params["tipo"] = str(tipo_orcamento).upper()
+    row = buscar_um(sql, params)
+    return float(row["total"] or 0) if row else 0.0
+
+
+def resumo_orcamento_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
+    """Resumo do orçamento mensal por centro de custo.
+
+    Inclui:
+    - compras de materiais
+    - serviços de terceiros aprovados/executados/finalizados
+    """
+    orc = carregar_orcamento_mensal(ano, mes, centro_custo_id, tipo_orcamento)
+    valor_orcado = float(orc["valor_orcado"]) if orc else 0.0
+    alerta_percentual = float(orc["alerta_percentual"]) if orc else 80.0
+
+    compras = total_compras_mes(ano, mes, centro_custo_id, tipo_orcamento)
+    servicos = total_servicos_mes(ano, mes, centro_custo_id, tipo_orcamento)
+    consumido = compras + servicos
+
+    saldo = valor_orcado - consumido
+    percentual = (consumido / valor_orcado * 100) if valor_orcado > 0 else 0
+    return {
+        "valor_orcado": valor_orcado,
+        "compras": compras,
+        "servicos": servicos,
+        "consumido": consumido,
+        "saldo": saldo,
+        "percentual": percentual,
+        "alerta_percentual": alerta_percentual,
+        "tipo_orcamento": str(tipo_orcamento or 'OPEX').upper(),
+    }
+
+
+def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento='OPEX'):
+    """Resumo geral mensal OPEX/CAPEX.
+
+    Inclui compras e serviços aprovados.
+    """
+    tipo = str(tipo_orcamento or 'OPEX').upper()
+    orc = carregar_orcamento_geral(ano, mes, tipo)
+    valor_total = float(orc["valor_total"]) if orc else 0.0
+    alerta_percentual = float(orc["alerta_percentual"]) if orc else 80.0
+    distribuido = total_distribuido_orcamento(ano, mes, tipo)
+
+    compras = total_compras_mes(ano, mes, None, tipo)
+    servicos = total_servicos_mes(ano, mes, None, tipo)
+    consumido = compras + servicos
+
+    saldo_distribuir = valor_total - distribuido
+    saldo_real = valor_total - consumido
+    percentual_consumido = (consumido / valor_total * 100) if valor_total > 0 else 0
+    percentual_distribuido = (distribuido / valor_total * 100) if valor_total > 0 else 0
+    return {
+        "tipo_orcamento": tipo,
+        "valor_total": valor_total,
+        "distribuido": distribuido,
+        "compras": compras,
+        "servicos": servicos,
         "consumido": consumido,
         "saldo_distribuir": saldo_distribuir,
         "saldo_real": saldo_real,
