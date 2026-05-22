@@ -8,6 +8,15 @@ DB_URL = str(get_config("DB_URL", "")) or str(get_config("ALMOXARIFADO_URL", "")
 engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=280, future=True)
 
 
+def set_database_url(db_url):
+    """Atualiza a conexão do módulo Compras/Serviços conforme a planta escolhida."""
+    global DB_URL, engine
+    if db_url and str(db_url) != str(DB_URL):
+        DB_URL = str(db_url)
+        engine.dispose()
+        engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=280, future=True)
+
+
 def garantir_coluna(tabela, coluna, definicao):
     try:
         executar(f"ALTER TABLE {tabela} ADD COLUMN {coluna} {definicao}")
@@ -58,9 +67,7 @@ def criar_tabelas():
         INDEX idx_serv_data (data),
         INDEX idx_serv_status (status),
         INDEX idx_serv_fornecedor (fornecedor_id),
-        INDEX idx_serv_cc (centro_custo_id),
-        CONSTRAINT fk_serv_fornecedor FOREIGN KEY (fornecedor_id) REFERENCES fornecedores(id) ON DELETE RESTRICT,
-        CONSTRAINT fk_serv_cc FOREIGN KEY (centro_custo_id) REFERENCES centros_custo(id) ON DELETE SET NULL
+        INDEX idx_serv_cc (centro_custo_id)      
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
     executar("""CREATE TABLE IF NOT EXISTS servico_anexos (

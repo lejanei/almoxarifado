@@ -12,19 +12,46 @@ APP_SUBTITLE = "Controle de Estoque e Manutenção"
 LOGO_PATH = Path(__file__).parent / "assets" / "logo_stockpro.svg"
 
 
-def get_database_url():
-    v = os.getenv("ALMOXARIFADO_URL")
+PLANTAS_DB = {
+    "IBRAC": "ALMOXARIFADO_URL_IBRAC",
+    "CORI": "ALMOXARIFADO_URL_CORI",
+}
+
+def get_config_value(nome, default=""):
+    v = os.getenv(nome)
     if v:
         return v
     try:
-        if "ALMOXARIFADO_URL" in st.secrets:
-            return st.secrets["ALMOXARIFADO_URL"]
+        if nome in st.secrets:
+            return st.secrets[nome]
     except Exception:
         pass
+    return default
+
+
+def get_database_url(planta=None):
+    planta = str(planta or st.session_state.get("planta", "IBRAC")).upper()
+
+    # Primeiro procura variável específica da planta.
+    secret_name = PLANTAS_DB.get(planta)
+    if secret_name:
+        v = get_config_value(secret_name, "")
+        if v:
+            return v
+
+    # Fallback compatível com versão antiga.
+    v = get_config_value("ALMOXARIFADO_URL", "")
+    if v:
+        return v
+
     return DEFAULT_DB_URL
 
 
-DATABASE_URL = get_database_url()
+def get_current_database_url():
+    return get_database_url(st.session_state.get("planta", "IBRAC"))
+
+
+DATABASE_URL = get_database_url("IBRAC")
 st.set_page_config(page_title=APP_NAME, page_icon="📦", layout="wide")
 
 
@@ -109,10 +136,14 @@ def format_duration(start_dt, end_dt):
 
 
 @st.cache_resource
-def get_engine():
+def get_engine_cached(db_url):
     return create_engine(
-        DATABASE_URL, pool_pre_ping=True, pool_recycle=3600, future=True
+        db_url, pool_pre_ping=True, pool_recycle=3600, future=True
     )
+
+
+def get_engine():
+    return get_engine_cached(get_current_database_url())
 
 
 def init_db():
@@ -322,7 +353,8 @@ def create_user(nome, usuario, email, perfil, senha, ativo=True):
             "atualizado_em": datetime.now(),
         },
     )
-    log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Criou usuário", "users", usuario.strip(), f"Perfil: {perfil}")
+    usuario_logado = st.session_state.get("user") or {}
+    log_action(usuario_logado.get("usuario", "sistema"), "Criou usuário", "users", usuario.strip(), f"Perfil: {perfil}")
 
 
 def get_products():
@@ -827,6 +859,8 @@ if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user" not in st.session_state:
     st.session_state.user = None
+if "planta" not in st.session_state:
+    st.session_state.planta = "IBRAC"
 
 
 def logout():
@@ -880,6 +914,28 @@ def require_permission(condition, message="Você não tem permissão para acessa
         st.stop()
 
 
+if not st.session_state.logged_in:
+    planta_escolhida = st.selectbox(
+        "Planta",
+        ["IBRAC", "CORI"],
+        index=["IBRAC", "CORI"].index(st.session_state.get("planta", "IBRAC")),
+        key="planta_login_selectbox",
+    )
+    if planta_escolhida != st.session_state.get("planta"):
+        st.session_state.planta = planta_escolhida
+        st.cache_resource.clear()
+        try:
+            shop_manager.set_database_url(get_current_database_url())
+        except Exception:
+            pass
+        st.rerun()
+    st.session_state.planta = planta_escolhida
+
+try:
+    shop_manager.set_database_url(get_current_database_url())
+except Exception:
+    pass
+
 init_db()
 if count_users() == 0:
     app_header("Primeira configuração", "Crie o primeiro usuário administrador.")
@@ -901,6 +957,7 @@ if not st.session_state.logged_in:
     with c2:
         st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
         with st.form("login"):
+            st.info(f"Planta selecionada: {st.session_state.get('planta', 'IBRAC')}")
             usuario = st.text_input("Usuário")
             senha = st.text_input("Senha", type="password")
             if st.form_submit_button("Entrar", use_container_width=True):
@@ -934,7 +991,7 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown(f"**{user['nome']}**")
-    st.caption(f"Perfil: {user['perfil']} | {user['usuario']}")
+    st.caption(f"Planta: {st.session_state.get('planta', 'IBRAC')} | Perfil: {user['perfil']} | {user['usuario']}")
     st.markdown("---")
     common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo"]
     compras_menu = ["Compras", "Serviços"]
@@ -955,10 +1012,10 @@ with st.sidebar:
 
 app_header(
     "Sistema de controle de estoque e manutenção",
-    "Estoque + máquinas + OS + preventivas + funcionários",
+    
 )
 
-st.markdown(f"""<div class="section-card" style="padding:0.6rem 1rem;"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><strong>Usuário:</strong> {user["nome"]}</div><div><strong>Perfil:</strong> {user["perfil"]}</div><div><strong>Turno:</strong> Operação online</div><div><strong>Data/Hora:</strong> {datetime.now().strftime("%d/%m/%Y %H:%M")}</div></div></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="section-card" style="padding:0.6rem 1rem;"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><strong>Usuário:</strong> {user["nome"]}</div><div><strong>Planta:</strong> {st.session_state.get("planta", "IBRAC")}</div><div><strong>Perfil:</strong> {user["perfil"]}</div><div><strong>Turno:</strong> Operação online</div><div><strong>Data/Hora:</strong> {datetime.now().strftime("%d/%m/%Y %H:%M")}</div></div></div>""", unsafe_allow_html=True)
 
 
 
@@ -970,6 +1027,10 @@ def can_view_purchases():
 
 def preparar_sessao_compras():
     """Adapta o login do StockPro para o módulo Shop Manager."""
+    try:
+        shop_manager.set_database_url(get_current_database_url())
+    except Exception:
+        pass
     perfil_stock = normalizar_perfil(user.get("perfil", ""))
 
     if perfil_stock == "administrador":
@@ -1739,7 +1800,7 @@ elif menu == "Usuários":
                 c3, c4 = st.columns(2)
                 email = c3.text_input("E-mail", value="" if pd.isna(row["email"]) else str(row["email"]))
                 senha = c4.text_input("Nova senha (opcional)", type="password")
-                perfil_opts = ["Administrador", "Operador"]
+                perfil_opts = ["Administrador", "Almoxarifado", "Operador", "Aprovador"]
                 perfil = st.selectbox("Perfil", perfil_opts, index=perfil_opts.index(row["perfil"]) if row["perfil"] in perfil_opts else 1)
                 ativo = st.checkbox("Ativo", value=bool(row["ativo"]))
                 col1, col2 = st.columns(2)
