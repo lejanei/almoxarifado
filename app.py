@@ -1,21 +1,79 @@
-import os, io, base64, hashlib
+import os, io, base64, hashlib, html, unicodedata
 from datetime import datetime, date, timedelta
+from zoneinfo import ZoneInfo
 from pathlib import Path
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 import shop_manager_app as shop_manager
 
+try:
+    from telegram_sender import enviar_telegram as enviar_telegram_configurado
+except Exception:
+    enviar_telegram_configurado = None
+
 DEFAULT_DB_URL = "mysql+pymysql://ljsyst02_adm:vinimalu121924@ljsystem.com.br/ljsyst02_almoxarifado?charset=utf8mb4"
 APP_NAME = "StockPro Manutenção"
 APP_SUBTITLE = "Controle de Estoque e Manutenção"
 LOGO_PATH = Path(__file__).parent / "assets" / "logo_stockpro.svg"
 
+APP_TIMEZONE = ZoneInfo("America/Sao_Paulo")
+
+def now_br():
+    """Retorna data/hora local de Brasília sem timezone para salvar no MySQL DATETIME."""
+    return datetime.now(APP_TIMEZONE).replace(tzinfo=None)
+
+def format_datetime_br(value):
+    """Formata DATETIME do banco para exibição padrão Brasil."""
+    if value is None or pd.isna(value):
+        return ""
+    try:
+        return pd.to_datetime(value).strftime("%d/%m/%Y %H:%M")
+    except Exception:
+        return str(value)
+
+
+
+PLANTA_PADRAO = "IBRAC"
 
 PLANTAS_DB = {
-    "IBRAC": "ALMOXARIFADO_URL_IBRAC",
-    "CORI": "ALMOXARIFADO_URL_CORI",
+    "IBRAC": {
+        "label": "IBRAC",
+        "env": "ALMOXARIFADO_URL_IBRAC",
+        "telegram_manutencao_env": "TELEGRAM_CHAT_ID_MANUTENCAO_IBRAC",
+    },
+    "CORI": {
+        "label": "CORI",
+        "env": "ALMOXARIFADO_URL_CORI",
+        "telegram_manutencao_env": "TELEGRAM_CHAT_ID_MANUTENCAO_CORI",
+    },
+    "CORI_TRES_LAGOAS": {
+        "label": "CORI TRÊS LAGOAS",
+        "env": "ALMOXARIFADO_URL_CORI_TRES_LAGOAS",
+        "telegram_manutencao_env": "TELEGRAM_CHAT_ID_MANUTENCAO_CORI_TRES_LAGOAS",
+    },
 }
+
+
+def normalizar_chave_planta(valor):
+    texto = str(valor or PLANTA_PADRAO).strip().upper()
+    texto = unicodedata.normalize("NFKD", texto).encode("ASCII", "ignore").decode("ASCII")
+    texto = texto.replace("-", "_").replace(" ", "_")
+    texto = "_".join(parte for parte in texto.split("_") if parte)
+
+    aliases = {
+        "CORI_TL": "CORI_TRES_LAGOAS",
+        "CORI_3_LAGOAS": "CORI_TRES_LAGOAS",
+        "CORI_TRES_LAGOAS": "CORI_TRES_LAGOAS",
+        "CORI_TRESLAGOAS": "CORI_TRES_LAGOAS",
+    }
+    texto = aliases.get(texto, texto)
+    return texto if texto in PLANTAS_DB else PLANTA_PADRAO
+
+
+def get_planta_label(planta=None):
+    chave = normalizar_chave_planta(planta or st.session_state.get("planta", PLANTA_PADRAO))
+    return PLANTAS_DB.get(chave, PLANTAS_DB[PLANTA_PADRAO])["label"]
 
 def get_config_value(nome, default=""):
     v = os.getenv(nome)
@@ -29,11 +87,116 @@ def get_config_value(nome, default=""):
     return default
 
 
+def get_telegram_chat_id_manutencao_por_planta(planta=None):
+    """Retorna o grupo Telegram de manutenção conforme a planta logada.
+
+    Fallbacks:
+    1) TELEGRAM_CHAT_ID_MANUTENCAO_<PLANTA>
+    2) TELEGRAM_CHAT_ID_MANUTENCAO
+    3) TELEGRAM_CHAT_ID
+    """
+    chave = normalizar_chave_planta(planta or st.session_state.get("planta", PLANTA_PADRAO))
+    planta_cfg = PLANTAS_DB.get(chave, PLANTAS_DB[PLANTA_PADRAO])
+    env_name = planta_cfg.get("telegram_manutencao_env")
+
+    if env_name:
+        chat_id = str(get_config_value(env_name, "")).strip()
+        if chat_id:
+            return chat_id
+
+    chat_id_manutencao = str(get_config_value("TELEGRAM_CHAT_ID_MANUTENCAO", "")).strip()
+    if chat_id_manutencao:
+        return chat_id_manutencao
+
+    return str(get_config_value("TELEGRAM_CHAT_ID", "")).strip()
+
+
+def enviar_telegram_app(mensagem, chat_id=None):
+    """Envia Telegram usando o mesmo padrão do pedido de compra, com fallback interno."""
+    if enviar_telegram_configurado:
+        try:
+            return enviar_telegram_configurado(mensagem, chat_id=chat_id)
+        except TypeError:
+            return enviar_telegram_configurado(mensagem)
+
+    token = str(get_config_value("TELEGRAM_BOT_TOKEN", ""))
+    chat_id_default = str(get_config_value("TELEGRAM_CHAT_ID", ""))
+    ativo = str(get_config_value("TELEGRAM_ATIVO", "SIM")).upper() == "SIM"
+    if not ativo or not token or not chat_id_default:
+        print("Telegram não configurado")
+        return False
+
+    try:
+        import requests
+        resp = requests.post(
+            f"https://api.telegram.org/bot{token}/sendMessage",
+            json={
+                "chat_id": (chat_id or chat_id_default),
+                "text": mensagem,
+                "parse_mode": "HTML",
+                "disable_web_page_preview": True,
+            },
+            timeout=20,
+        )
+        if resp.status_code == 200 and resp.json().get("ok"):
+            return True
+        print("Erro Telegram:", resp.status_code, resp.text)
+        return False
+    except Exception as erro:
+        print("Erro ao enviar Telegram:", erro)
+        return False
+
+
+def get_cost_center_name_by_id(centro_custo_id):
+    if not centro_custo_id:
+        return "Não informado"
+    try:
+        df = fetch_df("SELECT nome FROM centros_custo WHERE id=:id LIMIT 1", {"id": int(centro_custo_id)})
+        if not df.empty:
+            return str(df.iloc[0]["nome"])
+    except Exception:
+        pass
+    return "Não informado"
+
+
+def notificar_telegram_nova_ordem(order_id, tipo, opened_by, maquina, centro_custo, start_dt, end_dt, problema, status, solucao="", planta=None):
+    tipo_txt = "Preventiva" if str(tipo).upper() == "PREVENTIVA" else "Corretiva"
+    planta_chave = normalizar_chave_planta(planta or st.session_state.get("planta", PLANTA_PADRAO))
+    planta_label = get_planta_label(planta_chave)
+    inicio_txt = format_datetime_br(start_dt)
+    fim_txt = format_datetime_br(end_dt) if end_dt else "Não informado"
+    problema_txt = html.escape(str(problema or "Não informado"))
+    solucao_txt = html.escape(str(solucao or ""))
+
+    mensagem = f"""
+🛠️ <b>Nova Ordem de Manutenção Aberta</b>
+
+📌 <b>OS:</b> #{int(order_id)}
+🏢 <b>Planta:</b> {html.escape(str(planta_label))}
+🔧 <b>Tipo:</b> {html.escape(tipo_txt)}
+🏭 <b>Máquina:</b> {html.escape(str(maquina or 'Não informado'))}
+🏷️ <b>Centro de custo:</b> {html.escape(str(centro_custo or 'Não informado'))}
+⚠️ <b>Status:</b> {html.escape(str(status or 'Aberta'))}
+👤 <b>Aberta por:</b> {html.escape(str(opened_by or 'Sistema'))}
+📅 <b>Início:</b> {html.escape(str(inicio_txt))}
+📅 <b>Fim:</b> {html.escape(str(fim_txt))}
+
+📋 <b>Descrição:</b>
+{problema_txt}
+""".strip()
+
+    if solucao_txt:
+        mensagem += f"\n\n✅ <b>Solução:</b>\n{solucao_txt}"
+
+    chat_id_manutencao = get_telegram_chat_id_manutencao_por_planta(planta_chave)
+    return enviar_telegram_app(mensagem, chat_id=chat_id_manutencao)
+
 def get_database_url(planta=None):
-    planta = str(planta or st.session_state.get("planta", "IBRAC")).upper()
+    planta = normalizar_chave_planta(planta or st.session_state.get("planta", PLANTA_PADRAO))
 
     # Primeiro procura variável específica da planta.
-    secret_name = PLANTAS_DB.get(planta)
+    planta_cfg = PLANTAS_DB.get(planta, PLANTAS_DB[PLANTA_PADRAO])
+    secret_name = planta_cfg.get("env")
     if secret_name:
         v = get_config_value(secret_name, "")
         if v:
@@ -48,10 +211,10 @@ def get_database_url(planta=None):
 
 
 def get_current_database_url():
-    return get_database_url(st.session_state.get("planta", "IBRAC"))
+    return get_database_url(st.session_state.get("planta", PLANTA_PADRAO))
 
 
-DATABASE_URL = get_database_url("IBRAC")
+DATABASE_URL = get_database_url(PLANTA_PADRAO)
 st.set_page_config(page_title=APP_NAME, page_icon="📦", layout="wide")
 
 
@@ -209,7 +372,7 @@ def log_action(usuario, acao, entidade="", entidade_id="", detalhes=""):
                 "entidade": entidade,
                 "entidade_id": str(entidade_id) if entidade_id != "" else "",
                 "detalhes": detalhes,
-                "criado_em": datetime.now(),
+                "criado_em": now_br(),
             },
         )
     except Exception:
@@ -240,14 +403,14 @@ def update_user_record(user_id, nome, usuario_login, email, perfil, ativo):
             "email": email.strip(),
             "perfil": perfil,
             "ativo": 1 if ativo else 0,
-            "atualizado_em": datetime.now(),
+            "atualizado_em": now_br(),
         },
     )
 
 def update_user_password(user_id, senha):
     execute(
         "UPDATE users SET senha_hash=:senha_hash, atualizado_em=:agora WHERE id=:id",
-        {"id": int(user_id), "senha_hash": hash_password(senha), "agora": datetime.now()},
+        {"id": int(user_id), "senha_hash": hash_password(senha), "agora": now_br()},
     )
 
 def delete_user_record(user_id):
@@ -349,8 +512,8 @@ def create_user(nome, usuario, email, perfil, senha, ativo=True):
             "perfil": perfil,
             "senha_hash": hash_password(senha),
             "ativo": 1 if ativo else 0,
-            "criado_em": datetime.now(),
-            "atualizado_em": datetime.now(),
+            "criado_em": now_br(),
+            "atualizado_em": now_br(),
         },
     )
     usuario_logado = st.session_state.get("user") or {}
@@ -374,8 +537,8 @@ def create_product(nome, descricao, unidade, estoque_inicial, estoque_minimo, ce
             "estoque_minimo": float(estoque_minimo),
             "valor_unitario": float(valor_unitario or 0),
             "centro_custo_id": centro_custo_id,
-            "criado_em": datetime.now(),
-            "atualizado_em": datetime.now(),
+            "criado_em": now_br(),
+            "atualizado_em": now_br(),
         },
     )
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Criou produto", "products", nome.strip(), f"Estoque inicial: {estoque_inicial}")
@@ -439,7 +602,7 @@ def register_stock_movement(produto_id, tipo, quantidade, observacao, usuario_la
             "id": int(produto_id),
             "estoque": novo_estoque,
             "valor_unitario": novo_valor,
-            "agora": datetime.now(),
+            "agora": now_br(),
         },
     )
 
@@ -453,7 +616,7 @@ def register_stock_movement(produto_id, tipo, quantidade, observacao, usuario_la
             "quantidade": quantidade,
             "observacao": observacao,
             "usuario_lancamento": usuario_lancamento,
-            "criado_em": datetime.now(),
+            "criado_em": now_br(),
         },
     )
 
@@ -477,7 +640,7 @@ def update_product_record(product_id, nome, descricao, unidade, estoque_minimo, 
             "estoque_minimo": float(estoque_minimo),
             "centro_custo_id": centro_custo_id,
             "valor_unitario": float(valor_unitario or 0),
-            "agora": datetime.now(),
+            "agora": now_br(),
         },
     )
 
@@ -516,8 +679,8 @@ def create_machine(nome, status):
         {
             "nome": nome.strip(),
             "status": status,
-            "criado_em": datetime.now(),
-            "atualizado_em": datetime.now(),
+            "criado_em": now_br(),
+            "atualizado_em": now_br(),
         },
     )
 
@@ -529,7 +692,7 @@ def update_machine(machine_id, nome, status):
             "id": machine_id,
             "nome": nome.strip(),
             "status": status,
-            "agora": datetime.now(),
+            "agora": now_br(),
         },
     )
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Atualizou máquina", "machines", machine_id, nome.strip())
@@ -554,8 +717,8 @@ def create_employee(nome, setor, funcao):
             "nome": nome.strip(),
             "setor": setor.strip(),
             "funcao": funcao.strip(),
-            "criado_em": datetime.now(),
-            "atualizado_em": datetime.now(),
+            "criado_em": now_br(),
+            "atualizado_em": now_br(),
         },
     )
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Criou funcionário", "employees", nome.strip(), f"Setor: {setor}")
@@ -569,7 +732,7 @@ def update_employee(emp_id, nome, setor, funcao):
             "nome": nome.strip(),
             "setor": setor.strip(),
             "funcao": funcao.strip(),
-            "agora": datetime.now(),
+            "agora": now_br(),
         },
     )
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Atualizou funcionário", "employees", emp_id, nome.strip())
@@ -674,7 +837,7 @@ def delete_order_cascade(order_id: int, usuario_lancamento: str):
                 novo_estoque = float(produto["estoque_atual"]) + quantidade
                 conn.execute(
                     text("UPDATE products SET estoque_atual = :estoque, atualizado_em = :agora WHERE id = :id"),
-                    {"estoque": novo_estoque, "agora": datetime.now(), "id": product_id},
+                    {"estoque": novo_estoque, "agora": now_br(), "id": product_id},
                 )
                 conn.execute(
                     text(
@@ -686,7 +849,7 @@ def delete_order_cascade(order_id: int, usuario_lancamento: str):
                         "quantidade": quantidade,
                         "observacao": f"Devolução de peça por exclusão da ordem {order_id}",
                         "usuario_lancamento": usuario_lancamento,
-                        "criado_em": datetime.now(),
+                        "criado_em": now_br(),
                     },
                 )
 
@@ -728,7 +891,7 @@ def create_order(
     solution_description,
     centro_custo_id=None,
 ):
-    execute(
+    res = execute(
         "INSERT INTO service_orders (tipo,opened_by,machine_id,centro_custo_id,start_datetime,end_datetime,problem_description,status,solution_description,created_at,updated_at) VALUES (:tipo,:opened_by,:machine_id,:centro_custo_id,:start_datetime,:end_datetime,:problem_description,:status,:solution_description,:created_at,:updated_at)",
         {
             "tipo": tipo,
@@ -740,10 +903,11 @@ def create_order(
             "problem_description": problem_description.strip(),
             "status": status,
             "solution_description": solution_description.strip(),
-            "created_at": datetime.now(),
-            "updated_at": datetime.now(),
+            "created_at": now_br(),
+            "updated_at": now_br(),
         },
     )
+    return getattr(res, "lastrowid", None)
 
 
 def update_order(
@@ -754,18 +918,20 @@ def update_order(
     problem_description,
     status,
     solution_description,
+    centro_custo_id=None,
 ):
     execute(
-        "UPDATE service_orders SET machine_id=:machine_id,start_datetime=:start_datetime,end_datetime=:end_datetime,problem_description=:problem_description,status=:status,solution_description=:solution_description,updated_at=:updated_at WHERE id=:id",
+        "UPDATE service_orders SET machine_id=:machine_id,centro_custo_id=:centro_custo_id,start_datetime=:start_datetime,end_datetime=:end_datetime,problem_description=:problem_description,status=:status,solution_description=:solution_description,updated_at=:updated_at WHERE id=:id",
         {
             "id": order_id,
             "machine_id": machine_id,
+            "centro_custo_id": centro_custo_id,
             "start_datetime": start_dt,
             "end_datetime": end_dt,
             "problem_description": problem_description.strip(),
             "status": status,
             "solution_description": solution_description.strip(),
-            "updated_at": datetime.now(),
+            "updated_at": now_br(),
         },
     )
 
@@ -777,7 +943,7 @@ def close_order(order_id, solution_description, end_dt):
             "id": order_id,
             "solution_description": solution_description.strip(),
             "end_datetime": end_dt,
-            "updated_at": datetime.now(),
+            "updated_at": now_br(),
         },
     )
     log_action(st.session_state.get("user", {}).get("usuario", "sistema"), "Fechou ordem", "service_orders", order_id, "Finalizada")
@@ -798,7 +964,7 @@ def add_employee_to_order(order_id, employee_id, start_dt, end_dt):
             "employee_id": employee_id,
             "start_datetime": start_dt,
             "end_datetime": end_dt,
-            "created_at": datetime.now(),
+            "created_at": now_br(),
         },
     )
 
@@ -828,7 +994,7 @@ def add_part_to_order(order_id, product_id, quantidade, usuario_lancamento):
             text(
                 "UPDATE products SET estoque_atual=:estoque, atualizado_em=:agora WHERE id=:id"
             ),
-            {"estoque": novo, "agora": datetime.now(), "id": product_id},
+            {"estoque": novo, "agora": now_br(), "id": product_id},
         )
         conn.execute(
             text(
@@ -838,7 +1004,7 @@ def add_part_to_order(order_id, product_id, quantidade, usuario_lancamento):
                 "order_id": order_id,
                 "product_id": product_id,
                 "quantidade": quantidade,
-                "created_at": datetime.now(),
+                "created_at": now_br(),
             },
         )
         conn.execute(
@@ -850,7 +1016,7 @@ def add_part_to_order(order_id, product_id, quantidade, usuario_lancamento):
                 "quantidade": quantidade,
                 "observacao": f"Peça utilizada na ordem {order_id}",
                 "usuario_lancamento": usuario_lancamento,
-                "criado_em": datetime.now(),
+                "criado_em": now_br(),
             },
         )
 
@@ -860,7 +1026,9 @@ if "logged_in" not in st.session_state:
 if "user" not in st.session_state:
     st.session_state.user = None
 if "planta" not in st.session_state:
-    st.session_state.planta = "IBRAC"
+    st.session_state.planta = PLANTA_PADRAO
+else:
+    st.session_state.planta = normalizar_chave_planta(st.session_state.planta)
 
 
 def logout():
@@ -915,10 +1083,13 @@ def require_permission(condition, message="Você não tem permissão para acessa
 
 
 if not st.session_state.logged_in:
+    opcoes_plantas = list(PLANTAS_DB.keys())
+    planta_atual = normalizar_chave_planta(st.session_state.get("planta", PLANTA_PADRAO))
     planta_escolhida = st.selectbox(
         "Planta",
-        ["IBRAC", "CORI"],
-        index=["IBRAC", "CORI"].index(st.session_state.get("planta", "IBRAC")),
+        opcoes_plantas,
+        index=opcoes_plantas.index(planta_atual),
+        format_func=get_planta_label,
         key="planta_login_selectbox",
     )
     if planta_escolhida != st.session_state.get("planta"):
@@ -957,7 +1128,7 @@ if not st.session_state.logged_in:
     with c2:
         st.markdown('<div class="login-wrap">', unsafe_allow_html=True)
         with st.form("login"):
-            st.info(f"Planta selecionada: {st.session_state.get('planta', 'IBRAC')}")
+            st.info(f"Planta selecionada: {get_planta_label()}")
             usuario = st.text_input("Usuário")
             senha = st.text_input("Senha", type="password")
             if st.form_submit_button("Entrar", use_container_width=True):
@@ -991,7 +1162,7 @@ with st.sidebar:
             unsafe_allow_html=True,
         )
     st.markdown(f"**{user['nome']}**")
-    st.caption(f"Planta: {st.session_state.get('planta', 'IBRAC')} | Perfil: {user['perfil']} | {user['usuario']}")
+    st.caption(f"Planta: {get_planta_label()} | Perfil: {user['perfil']} | {user['usuario']}")
     st.markdown("---")
     common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo"]
     compras_menu = ["Compras", "Serviços"]
@@ -1015,7 +1186,7 @@ app_header(
     
 )
 
-st.markdown(f"""<div class="section-card" style="padding:0.6rem 1rem;"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><strong>Usuário:</strong> {user["nome"]}</div><div><strong>Planta:</strong> {st.session_state.get("planta", "IBRAC")}</div><div><strong>Perfil:</strong> {user["perfil"]}</div><div><strong>Turno:</strong> Operação online</div><div><strong>Data/Hora:</strong> {datetime.now().strftime("%d/%m/%Y %H:%M")}</div></div></div>""", unsafe_allow_html=True)
+st.markdown(f"""<div class="section-card" style="padding:0.6rem 1rem;"><div style="display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;"><div><strong>Usuário:</strong> {user["nome"]}</div><div><strong>Planta:</strong> {get_planta_label()}</div><div><strong>Perfil:</strong> {user["perfil"]}</div><div><strong>Turno:</strong> Operação online</div><div><strong>Data/Hora:</strong> {now_br().strftime("%d/%m/%Y %H:%M")}</div></div></div>""", unsafe_allow_html=True)
 
 
 
@@ -1580,17 +1751,35 @@ def order_page(tipo, titulo):
                 status = st.selectbox("Status", ["Aberta", "Em andamento", "Finalizada", "Cancelada"], key=f"st_{tipo}")
                 solucao = st.text_area("Descrição da solução")
                 if st.form_submit_button("Salvar ordem", use_container_width=True):
-                    create_order(
+                    start_dt = combine_date_time(data_inicio, hora_inicio)
+                    end_dt = combine_date_time(data_fim, hora_fim)
+                    order_id = create_order(
                         tipo,
                         user["usuario"],
                         maq_map[maquina],
-                        combine_date_time(data_inicio, hora_inicio),
-                        combine_date_time(data_fim, hora_fim),
+                        start_dt,
+                        end_dt,
                         problema,
                         status,
                         solucao,
                         centro_custo_id,
                     )
+                    maquina_nome = maquina.split(" - ", 1)[1] if " - " in maquina else maquina
+                    centro_custo_nome = get_cost_center_name_by_id(centro_custo_id)
+                    if order_id:
+                        notificar_telegram_nova_ordem(
+                            order_id,
+                            tipo,
+                            user["usuario"],
+                            maquina_nome,
+                            centro_custo_nome,
+                            start_dt,
+                            end_dt,
+                            problema,
+                            status,
+                            solucao,
+                            planta=st.session_state.get("planta", PLANTA_PADRAO),
+                        )
                     st.success("Ordem cadastrada.")
                     st.rerun()
 
@@ -1630,6 +1819,11 @@ def order_page(tipo, titulo):
                 hora_fim = c4.time_input("Hora fim", value=end_dt.time(), key=f"edi_{tipo}_4")
 
                 problema = st.text_area("Descrição do problema", value="" if pd.isna(row["problem_description"]) else str(row["problem_description"]))
+                centro_custo_id = select_cost_center_with_current(
+                    "Centro de custo da ordem",
+                    row.get("centro_custo_id", None),
+                    key=f"edi_{tipo}_cc",
+                )
                 status_opts = ["Aberta", "Em andamento", "Finalizada", "Cancelada"]
                 status = st.selectbox("Status", status_opts, index=status_opts.index(row["status"]) if row["status"] in status_opts else 0, key=f"edi_{tipo}_5")
                 solucao = st.text_area("Descrição da solução", value="" if pd.isna(row["solution_description"]) else str(row["solution_description"]))
@@ -1643,6 +1837,7 @@ def order_page(tipo, titulo):
                         problema,
                         status,
                         solucao,
+                        centro_custo_id,
                     )
                     st.success("Ordem atualizada.")
                     st.rerun()
@@ -1730,7 +1925,11 @@ def order_page(tipo, titulo):
         df = get_orders_filtered(tipo, machine_id=machine_id, status=status, date_from=d_ini, date_to=d_fim)
         if not df.empty:
             df["Tempo total"] = df.apply(lambda r: format_duration(r["start_datetime"], r["end_datetime"]), axis=1)
-            st.dataframe(df.rename(columns={"id":"ID ordem","opened_by":"Aberta por","maquina":"Máquina","start_datetime":"Início","end_datetime":"Fim","problem_description":"Problema","status":"Status","solution_description":"Solução"}), use_container_width=True, hide_index=True)
+            df_view = df.copy()
+            for col in ["created_at", "updated_at"]:
+                if col in df_view.columns:
+                    df_view[col] = df_view[col].apply(format_datetime_br)
+            st.dataframe(df_view.rename(columns={"id":"ID ordem","opened_by":"Aberta por","maquina":"Máquina","centro_custo":"Centro de custo","start_datetime":"Início","end_datetime":"Fim","problem_description":"Problema","status":"Status","solution_description":"Solução","created_at":"Criado em","updated_at":"Atualizado em"}), use_container_width=True, hide_index=True)
 
             ordem_escolhida = st.selectbox(
                 "Selecione uma ordem da consulta para editar",
@@ -1845,6 +2044,27 @@ elif menu == "Auditoria":
 
 elif menu == "Dashboard executivo":
     st.subheader("Dashboard executivo")
+    st.markdown("""
+        <style>
+        div[data-testid="stMetric"] {
+            padding: 0px !important;
+        }
+
+        div[data-testid="stMetricLabel"] p {
+            font-size: 11px !important;
+            font-weight: 600 !important;
+        }
+
+        div[data-testid="stMetricValue"] {
+            font-size: 16px !important;
+            font-weight: 700 !important;
+        }
+
+        div[data-testid="stMetricDelta"] {
+            font-size: 10px !important;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
     os_metrics = prepare_orders_metrics(os_df)
     pm_metrics = prepare_orders_metrics(pm_df)

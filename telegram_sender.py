@@ -4,6 +4,10 @@ from utils import get_config
 
 TELEGRAM_BOT_TOKEN = str(get_config("TELEGRAM_BOT_TOKEN", ""))
 TELEGRAM_CHAT_ID = str(get_config("TELEGRAM_CHAT_ID", ""))
+TELEGRAM_CHAT_ID_MANUTENCAO = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO", TELEGRAM_CHAT_ID))
+TELEGRAM_CHAT_ID_MANUTENCAO_IBRAC = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO_IBRAC", TELEGRAM_CHAT_ID_MANUTENCAO))
+TELEGRAM_CHAT_ID_MANUTENCAO_CORI = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO_CORI", TELEGRAM_CHAT_ID_MANUTENCAO))
+TELEGRAM_CHAT_ID_MANUTENCAO_CORI_TRES_LAGOAS = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO_CORI_TRES_LAGOAS", TELEGRAM_CHAT_ID_MANUTENCAO))
 TELEGRAM_ATIVO = str(get_config("TELEGRAM_ATIVO", "SIM")).upper() == "SIM"
 
 
@@ -11,14 +15,16 @@ def telegram_configurado():
     return bool(TELEGRAM_ATIVO and TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID)
 
 
-def enviar_telegram(mensagem: str):
+def enviar_telegram(mensagem: str, chat_id: str | None = None):
     if not telegram_configurado():
         print("Telegram não configurado")
         return False
 
+    chat_id = chat_id or TELEGRAM_CHAT_ID
+
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": mensagem,
         "parse_mode": "HTML",
         "disable_web_page_preview": True,
