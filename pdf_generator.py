@@ -13,7 +13,7 @@ def gerar_pdf_pedido(id_pedido):
     if pedido is None: return None
     itens=carregar_itens_pedido(id_pedido); anexos=carregar_anexos_pedido(id_pedido)
     pdf_dir=Path('shop_data')/'pdfs'; qr_dir=Path('shop_data')/'qrcodes'; assets=Path('assets')
-    pdf_dir.mkdir(exist_ok=True); qr_dir.mkdir(exist_ok=True); assets.mkdir(exist_ok=True)
+    pdf_dir.mkdir(parents=True,exist_ok=True); qr_dir.mkdir(parents=True,exist_ok=True); assets.mkdir(parents=True,exist_ok=True)
     numero=pedido['numero']; pdf_path=pdf_dir/f'pedido_{numero}.pdf'
     doc=SimpleDocTemplate(str(pdf_path),pagesize=A4,rightMargin=16*mm,leftMargin=16*mm,topMargin=14*mm,bottomMargin=14*mm)
     styles=getSampleStyleSheet(); styles.add(ParagraphStyle(name='Small', parent=styles['BodyText'], fontSize=8, leading=10))
