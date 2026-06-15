@@ -39,8 +39,82 @@ def carregar_df(sql, params=None):
     with engine.begin() as conn:
         return pd.read_sql_query(text(sql), conn, params=params or {})
 
+def carregar_produtos_producao():
+    return carregar_df("""
+    SELECT
+    id,
+    codigo,
+    nome,
+    unidade,
+    peso_padrao,
+    ativo
+    FROM producao_produtos
+    WHERE ativo=1
+    ORDER BY nome
+    """)
+
+
+def inserir_produto_producao(codigo,nome,unidade,peso):
+    if not codigo:
+        codigo=nome.upper().replace(" ","_")    
+    executar("""
+    INSERT INTO producao_produtos
+    (codigo,nome,unidade,peso_padrao)
+    VALUES
+    (:codigo,:nome,:unidade,:peso)
+    """,{
+        "codigo":codigo,
+        "nome":nome,
+        "unidade":unidade,
+        "peso":peso
+    })
+
+
+def atualizar_produto_producao(id_produto,codigo,nome,unidade,peso,ativo):
+    executar("""
+    UPDATE producao_produtos
+    SET
+    codigo=:codigo,
+    nome=:nome,
+    unidade=:unidade,
+    peso_padrao=:peso,
+    ativo=:ativo
+    WHERE id=:id
+    """,{
+    "id":id_produto,
+    "codigo":codigo,
+    "nome":nome,
+    "unidade":unidade,
+    "peso":peso,
+    "ativo":ativo
+
+    })
+
+
+def excluir_produto_producao(id_produto):
+    executar("""
+    DELETE FROM producao_produtos
+    WHERE id=:id
+    """,{
+    "id":id_produto
+    })
 
 def criar_tabelas():
+    executar("""CREATE TABLE IF NOT EXISTS producao_produtos(
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            codigo VARCHAR(50) UNIQUE,
+            nome VARCHAR(150) NOT NULL,
+            unidade VARCHAR(20) DEFAULT 'KG',
+            peso_padrao DECIMAL(10,2) DEFAULT 0,
+            ativo TINYINT(1) DEFAULT 1,
+            created_at DATETIME DEFAULT CURRENT_TIMESTAMP,
+            updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
+            ON UPDATE CURRENT_TIMESTAMP
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+        """)
+    
+    
+    
     executar("""CREATE TABLE IF NOT EXISTS servicos_terceiros (
         id INT AUTO_INCREMENT PRIMARY KEY,
         numero VARCHAR(50),
@@ -347,7 +421,13 @@ def carregar_itens_pedido(id_pedido):
 
 
 def buscar_pedido(id_pedido):
-    return buscar_um("SELECT * FROM pedidos WHERE id=:id", {"id": id_pedido})
+    return buscar_um("""
+        SELECT p.*, f.nome AS fornecedor, cc.nome AS centro_custo
+        FROM pedidos p
+        LEFT JOIN fornecedores f ON f.id=p.fornecedor_id
+        LEFT JOIN centros_custo cc ON cc.id=p.centro_custo_id
+        WHERE p.id=:id
+    """, {"id": id_pedido})
 
 
 def criar_pedido(data_pedido, fornecedor_id, prioridade, itens, observacao, usuario, centro_custo_id=None):

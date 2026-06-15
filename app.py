@@ -6,6 +6,7 @@ import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text
 import shop_manager_app as shop_manager
+import producao_app as producao
 
 try:
     from telegram_sender import enviar_telegram as enviar_telegram_configurado
@@ -1097,6 +1098,7 @@ if not st.session_state.logged_in:
         st.cache_resource.clear()
         try:
             shop_manager.set_database_url(get_current_database_url())
+            producao.set_database_url(get_current_database_url())
         except Exception:
             pass
         st.rerun()
@@ -1104,6 +1106,7 @@ if not st.session_state.logged_in:
 
 try:
     shop_manager.set_database_url(get_current_database_url())
+    producao.set_database_url(get_current_database_url())
 except Exception:
     pass
 
@@ -1164,7 +1167,7 @@ with st.sidebar:
     st.markdown(f"**{user['nome']}**")
     st.caption(f"Planta: {get_planta_label()} | Perfil: {user['perfil']} | {user['usuario']}")
     st.markdown("---")
-    common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Dashboard executivo"]
+    common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Produção", "Dashboard executivo"]
     compras_menu = ["Compras", "Serviços"]
     almox_menu = ["Produtos / Estoque"] + compras_menu
     admin_menu = ["Produtos / Estoque", "Máquinas", "Funcionários", "Usuários", "Auditoria"] + compras_menu
@@ -1397,6 +1400,13 @@ elif menu == "Meu painel":
             use_container_width=True,
             hide_index=True,
         )
+
+elif menu == "Produção":
+    try:
+        producao.set_database_url(get_current_database_url())
+        producao.tela_producao(usuario=user.get("nome", "Sistema"), planta_label=get_planta_label())
+    except Exception as erro:
+        st.error(f"Erro ao abrir módulo de produção: {erro}")
 
 elif menu == "Compras":
     require_permission(can_view_purchases(), "Você não possui acesso ao módulo Compras.")
