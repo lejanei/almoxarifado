@@ -526,11 +526,18 @@ def tela_programar(usuario, planta_label):
             {"id": ultima_id},
         )
         if row:
-            st.markdown("#### Prévia da etiqueta")
-            components.html(
-            etiqueta_html(row, planta_label),
-            height=520,
-            scrolling=False,
+            #st.markdown("#### Prévia da etiqueta")
+            # BOTÕES PARA IMPRESSÃO DA ETIQUETA
+            botao_imprimir_etiqueta(row, planta_label)
+
+            zpl = gerar_zpl_etiqueta(row, planta_label)
+
+            st.download_button(
+                "Baixar ZPL Zebra",
+                data=zpl,
+                file_name=f"etiqueta_{row.get('codigo_barras', 'pallet')}.zpl",
+                mime="text/plain",
+                use_container_width=True,
             )
             st.info("Nesta primeira versão o sistema apenas registra o código que já estará na etiqueta impressa por vocês. Não há impressão automática de etiqueta.")
 
@@ -634,10 +641,17 @@ def tela_consulta(usuario, planta_label):
             st.success("Status atualizado.")
             st.rerun()
         st.markdown("##### Registro do pallet")
-        components.html(
-            etiqueta_html(row, planta_label),
-            height=520,
-            scrolling=False,
+        # BOTÕES PARA IMPRESSÃO DA ETIQUETA
+        botao_imprimir_etiqueta(row, planta_label)
+
+        zpl = gerar_zpl_etiqueta(row, planta_label)
+
+        st.download_button(
+            "Baixar ZPL Zebra",
+            data=zpl,
+            file_name=f"etiqueta_{row.get('codigo_barras', 'pallet')}.zpl",
+            mime="text/plain",
+            use_container_width=True,
         )
         logs = carregar_df(
             "SELECT evento, status_anterior, status_novo, usuario, observacao, created_at FROM producao_logs WHERE pallet_id=:id ORDER BY id DESC",
@@ -710,4 +724,96 @@ def tela_producao(usuario="Sistema", planta_label=""):
         tela_dashboard()
         
 
+def botao_imprimir_etiqueta(row, planta_label=""):
+    html_etiqueta = etiqueta_html(row, planta_label)
 
+    html_print = f"""
+    <html>
+    <head>
+        <title>Etiqueta {row.get("codigo_barras", "")}</title>
+        <style>
+            body {{
+                margin: 0;
+                padding: 10px;
+                background: white;
+            }}
+
+            @media print {{
+                body {{
+                    margin: 0;
+                    padding: 0;
+                }}
+
+                button {{
+                    display: none;
+                }}
+            }}
+        </style>
+    </head>
+    <body>
+        {html_etiqueta}
+
+        <br>
+
+        <button onclick="window.print()" style="
+            font-size:18px;
+            padding:12px 22px;
+            border-radius:8px;
+            cursor:pointer;
+        ">
+            Imprimir etiqueta
+        </button>
+    </body>
+    </html>
+    """
+
+    components.html(
+        html_print,
+        height=620,
+        scrolling=True,
+    )
+    
+def gerar_zpl_etiqueta(row, planta_label=""):
+    codigo = str(row.get("codigo_barras") or "")
+    produto = str(row.get("produto") or "")[:35]
+    maquina = str(row.get("maquina") or "")[:30]
+    lote = str(row.get("lote") or "")[:30]
+    turno = str(row.get("turno") or "")[:20]
+    kg = format_number(row.get("kg", 0))
+    data_txt = format_date_br(row.get("data_producao"))
+
+    return f"""
+^XA
+^CI28
+^PW800
+^LL560
+^FO30,25^A0N,28,28^FD{planta_label}^FS
+^FO30,60^A0N,38,38^FDETIQUETA DE PRODUCAO^FS
+
+^FO30,120^A0N,28,28^FDCodigo:^FS
+^FO170,120^A0N,28,28^FD{codigo}^FS
+
+^FO30,160^A0N,28,28^FDProduto:^FS
+^FO170,160^A0N,28,28^FD{produto}^FS
+
+^FO30,200^A0N,28,28^FDMaquina:^FS
+^FO170,200^A0N,28,28^FD{maquina}^FS
+
+^FO30,240^A0N,28,28^FDLote:^FS
+^FO170,240^A0N,28,28^FD{lote}^FS
+
+^FO30,280^A0N,28,28^FDTurno:^FS
+^FO170,280^A0N,28,28^FD{turno}^FS
+
+^FO30,320^A0N,28,28^FDData:^FS
+^FO170,320^A0N,28,28^FD{data_txt}^FS
+
+^FO30,360^A0N,28,28^FDKg:^FS
+^FO170,360^A0N,28,28^FD{kg}^FS
+
+^FO90,415^BY3
+^BCN,90,Y,N,N
+^FD{codigo}^FS
+
+^XZ
+""".strip()
