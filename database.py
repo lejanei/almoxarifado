@@ -287,6 +287,38 @@ def criar_tabelas():
         lida TINYINT DEFAULT 0,
         INDEX idx_notificacao_pedido (pedido_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+    
+    executar("""CREATE TABLE IF NOT EXISTS solicitacoes (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        numero VARCHAR(50),
+        tipo VARCHAR(20) NOT NULL,
+        descricao TEXT NOT NULL,
+        quantidade DECIMAL(15,3) DEFAULT 0,
+        unidade VARCHAR(20),
+        centro_custo_id INT NULL,
+        prioridade VARCHAR(50) DEFAULT 'Normal',
+        status VARCHAR(50) DEFAULT 'ABERTA',
+        observacao TEXT,
+        solicitado_por VARCHAR(100),
+        pedido_id INT NULL,
+        servico_id INT NULL,
+        criado_em VARCHAR(50),
+        atualizado_em VARCHAR(50),
+        INDEX idx_sol_tipo (tipo),
+        INDEX idx_sol_status (status),
+        INDEX idx_sol_cc (centro_custo_id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
+
+    executar("""CREATE TABLE IF NOT EXISTS solicitacao_anexos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        solicitacao_id INT NOT NULL,
+        nome_arquivo VARCHAR(255) NOT NULL,
+        caminho VARCHAR(500) NOT NULL,
+        enviado_por VARCHAR(100),
+        data_envio VARCHAR(50),
+        INDEX idx_sol_anexos (solicitacao_id),
+        CONSTRAINT fk_sol_anexos FOREIGN KEY (solicitacao_id) REFERENCES solicitacoes(id) ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
     inserir_usuarios_padrao()
     migrar_banco()
@@ -995,3 +1027,83 @@ def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento='OPEX'):
         "percentual_distribuido": percentual_distribuido,
         "alerta_percentual": alerta_percentual,
     }
+    
+def formatar_solicitacao_id(solicitacao_id):
+    return f"SOL-{int(solicitacao_id):06d}"
+
+
+def criar_solicitacao(tipo, descricao, quantidade, unidade, centro_custo_id, prioridade, observacao, usuario):
+    with engine.begin() as conn:
+        res = conn.execute(text("""
+            INSERT INTO solicitacoes
+            (tipo, descricao, quantidade, unidade, centro_custo_id, prioridade, status, observacao, solicitado_por, criado_em, atualizado_em)
+            VALUES
+            (:tipo, :descricao, :quantidade, :unidade, :centro_custo_id, :prioridade, 'ABERTA', :observacao, :usuario, :agora, :agora)
+        """), {
+            "tipo": str(tipo).upper(),
+            "descricao": descricao,
+            "quantidade": float(quantidade or 0),
+            "unidade": unidade,
+            "centro_custo_id": int(centro_custo_id) if centro_custo_id else None,
+            "prioridade": prioridade,
+            "observacao": observacao,
+            "usuario": usuario,
+            "agora": agora(),
+        })
+        solicitacao_id = res.lastrowid
+        numero = formatar_solicitacao_id(solicitacao_id)
+        conn.execute(text("UPDATE solicitacoes SET numero=:numero WHERE id=:id"), {"numero": numero, "id": solicitacao_id})
+    return solicitacao_id, numero
+
+
+def carregar_solicitacoes(tipo=None):
+    sql = """
+        SELECT s.*, cc.nome AS centro_custo
+        FROM solicitacoes s
+        LEFT JOIN centros_custo cc ON cc.id=s.centro_custo_id
+        WHERE 1=1
+    """
+    params = {}
+    if tipo:
+        sql += " AND s.tipo=:tipo"
+        params["tipo"] = str(tipo).upper()
+    sql += " ORDER BY s.id DESC"
+    return carregar_df(sql, params)
+
+
+def buscar_solicitacao(solicitacao_id):
+    return buscar_um("""
+        SELECT s.*, cc.nome AS centro_custo
+        FROM solicitacoes s
+        LEFT JOIN centros_custo cc ON cc.id=s.centro_custo_id
+        WHERE s.id=:id
+    """, {"id": int(solicitacao_id)})
+
+
+def alterar_status_solicitacao(solicitacao_id, status):
+    executar(
+        "UPDATE solicitacoes SET status=:status, atualizado_em=:agora WHERE id=:id",
+        {"id": int(solicitacao_id), "status": status, "agora": agora()},
+    )
+
+
+def inserir_anexo_solicitacao(solicitacao_id, nome_arquivo, caminho, usuario):
+    executar("""
+        INSERT INTO solicitacao_anexos
+        (solicitacao_id, nome_arquivo, caminho, enviado_por, data_envio)
+        VALUES
+        (:solicitacao_id, :nome, :caminho, :usuario, :data)
+    """, {
+        "solicitacao_id": int(solicitacao_id),
+        "nome": nome_arquivo,
+        "caminho": caminho,
+        "usuario": usuario,
+        "data": agora(),
+    })
+
+
+def carregar_anexos_solicitacao(solicitacao_id):
+    return carregar_df(
+        "SELECT * FROM solicitacao_anexos WHERE solicitacao_id=:id ORDER BY id DESC",
+        {"id": int(solicitacao_id)},
+    )

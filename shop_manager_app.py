@@ -95,6 +95,23 @@ def nome_centro_custo(cc_id):
     row = centros[centros['id'].astype(int) == int(cc_id)]
     return str(row.iloc[0]['nome']) if not row.empty else f'Centro {cc_id}'
 
+def mensagem_solicitacao_criada(numero, tipo, descricao, quantidade, unidade, centro_custo, prioridade, usuario):
+    qtd_txt = ""
+    if str(tipo).upper() == "MATERIAL":
+        qtd_txt = f"\nQuantidade: {quantidade} {unidade}"
+
+    return f"""📥 NOVA SOLICITAÇÃO
+
+Solicitação: {numero}
+Tipo: {tipo}
+Centro de custo: {centro_custo}
+Prioridade: {prioridade}
+Solicitado por: {usuario}{qtd_txt}
+
+Descrição:
+{descricao}
+"""
+
 
 def verificar_alerta_orcamento(ano, mes, centro_custo_id, tipo_orcamento='OPEX', numero_pedido=''):
     resumo = resumo_orcamento_mes(ano, mes, centro_custo_id, tipo_orcamento)
@@ -127,25 +144,28 @@ Limite de alerta: {resumo['alerta_percentual']:.1f}%
 def tem_permissao_aprovar(): return st.session_state.perfil in ['admin','aprovador']
 def tem_permissao_excluir(): return st.session_state.perfil in ['admin','aprovador']
 
-def notificar(tipo,pedido_id,numero,msg,usuario,pdf=None,legenda='',enviar_anexos_telegram=False):
-    """Envia notificações.
+def notificar(tipo,pedido_id,numero,msg,usuario,pdf=None,legenda='',enviar_anexos_telegram=False,enviar_email=False):
+    """Envia notificações de compras.
 
     E-mail:
-        continua podendo enviar o PDF da ordem de compra gerado pelo sistema.
+        envia somente quando enviar_email=True. No fluxo atual, isso ocorre apenas
+        na criação do pedido e no recebimento final, já com o PDF atualizado.
 
     Telegram:
-        sempre envia a mensagem.
+        continua enviando a mensagem normalmente.
         envia os anexos reais do pedido somente quando enviar_anexos_telegram=True,
         ou seja, somente na criação do pedido de compra.
     """
     assunto = f'StockPro Compras - {tipo} - {numero}'
 
-    # E-mail mantém o comportamento anterior.
-    try:
-        ok_email = email_mod.enviar_email_notificacao(assunto, msg, pdf, legenda)
-    except Exception as erro_email:
-        print("Erro email:", erro_email)
-        ok_email = False
+    if enviar_email:
+        try:
+            ok_email = email_mod.enviar_email_notificacao(assunto, msg, pdf, legenda)
+        except Exception as erro_email:
+            print("Erro email:", erro_email)
+            ok_email = False
+    else:
+        ok_email = None
 
     # Telegram envia a mensagem.
     try:
@@ -171,7 +191,10 @@ def notificar(tipo,pedido_id,numero,msg,usuario,pdf=None,legenda='',enviar_anexo
     ok_telegram = ok_msg_telegram and ok_anexos_telegram
 
     canais = []
-    canais.append('Email enviado' if ok_email else 'Email não enviado')
+    if enviar_email:
+        canais.append('Email enviado' if ok_email else 'Email não enviado')
+    else:
+        canais.append('Email não enviado por regra do fluxo')
 
     if enviar_anexos_telegram:
         if anexos is None or anexos.empty:
@@ -268,6 +291,152 @@ def tela_dashboard():
         cols = [c for c in cols_pref if c in pedidos_mes.columns]
         st.dataframe(pedidos_mes[cols or pedidos_mes.columns.tolist()].tail(20), use_container_width=True, hide_index=True)
 
+def tela_solicitacoes(tipo_padrao=None):
+    st.subheader("📥 Solicitações")
+    
+
+    t1, t2 = st.tabs(["Nova Solicitação", "Solicitações"])
+
+    with t1:
+        with st.form("nova_solicitacao", clear_on_submit=True):
+            tipo = tipo_padrao or st.selectbox("Tipo", ["MATERIAL", "SERVICO"])
+            descricao = st.text_area("Descrição da solicitação")
+            
+            if tipo == "MATERIAL":
+                c1, c2 = st.columns(2)
+                quantidade = c1.number_input("Quantidade", min_value=0.0, step=1.0)
+                unidade = c2.text_input("Unidade", value="UN")
+            else:
+                quantidade = 0
+                unidade = ""
+
+            centro_custo_id = seletor_centro_custo("Centro de custo", key="cc_solicitacao")
+            prioridade = st.selectbox("Prioridade", ["Baixa", "Normal", "Alta", "Urgente"], index=1)
+            observacao = st.text_area("Observação")
+            anexos = st.file_uploader("Anexos", accept_multiple_files=True)
+
+            salvar = st.form_submit_button("Salvar Solicitação", use_container_width=True)
+
+        if salvar:
+            if not descricao.strip():
+                st.error("Informe a descrição da solicitação.")
+            else:
+                solicitacao_id, numero = criar_solicitacao(
+                    tipo,
+                    descricao.strip(),
+                    quantidade,
+                    unidade,
+                    centro_custo_id,
+                    prioridade,
+                    observacao,
+                    st.session_state.usuario,
+                )
+
+                adir = Path("shop_data") / "solicitacoes" / numero
+                adir.mkdir(parents=True, exist_ok=True)
+
+                for arq in anexos:
+                    dest = adir / arq.name
+                    dest.write_bytes(arq.getbuffer())
+                    inserir_anexo_solicitacao(
+                        solicitacao_id,
+                        arq.name,
+                        str(dest),
+                        st.session_state.usuario,
+                    )
+
+                centro_nome = nome_centro_custo(centro_custo_id)
+
+                msg = mensagem_solicitacao_criada(
+                    numero,
+                    tipo,
+                    descricao.strip(),
+                    quantidade,
+                    unidade,
+                    centro_nome,
+                    prioridade,
+                    st.session_state.usuario,
+                )
+
+                try:
+                    telegram_mod.enviar_telegram(msg)
+                except Exception as e:
+                    print("Erro ao enviar solicitação para Telegram:", e)
+
+                st.success(f"Solicitação {numero} criada com sucesso.")
+                st.rerun()
+
+    with t2:
+        filtro_tipo = tipo_padrao or st.selectbox("Filtrar tipo", ["TODOS", "MATERIAL", "SERVICO"])
+        filtro_status = st.selectbox("Filtrar status", ["TODOS", "ABERTA", "EM_ANALISE", "CONVERTIDA", "CANCELADA"])
+
+        tipo_consulta = None if filtro_tipo == "TODOS" else filtro_tipo
+        df = carregar_solicitacoes(tipo_consulta)
+
+        if df.empty:
+            st.info("Nenhuma solicitação cadastrada.")
+            return
+
+        if filtro_status != "TODOS":
+            df = df[df["status"] == filtro_status]
+
+        st.dataframe(
+            df.rename(columns={
+                "numero": "Número",
+                "tipo": "Tipo",
+                "descricao": "Descrição",
+                "quantidade": "Quantidade",
+                "unidade": "Unidade",
+                "centro_custo": "Centro de custo",
+                "prioridade": "Prioridade",
+                "status": "Status",
+                "solicitado_por": "Solicitado por",
+                "criado_em": "Criado em",
+            }),
+            use_container_width=True,
+            hide_index=True,
+        )
+
+        if df.empty:
+            return
+
+        opts = [f"{r.numero} | {r.tipo} | {r.status} | {r.prioridade}" for r in df.itertuples()]
+        esc = st.selectbox("Abrir solicitação", opts)
+        solicitacao_id = int(df.iloc[opts.index(esc)].id)
+        sol = buscar_solicitacao(solicitacao_id)
+
+        st.markdown(f"### {sol['numero']} - {sol['tipo']} - {sol['status']}")
+        st.write(f"**Descrição:** {sol['descricao']}")
+        st.write(f"**Centro de custo:** {sol.get('centro_custo') or 'Sem centro de custo'}")
+        st.write(f"**Prioridade:** {sol['prioridade']}")
+        st.write(f"**Solicitado por:** {sol['solicitado_por']}")
+        st.write(f"**Observação:** {sol.get('observacao') or ''}")
+
+        anexos = carregar_anexos_solicitacao(solicitacao_id)
+        st.markdown("### 📎 Anexos")
+        if anexos.empty:
+            st.info("Nenhum anexo.")
+        else:
+            for a in anexos.itertuples():
+                p = Path(a.caminho)
+                if p.exists():
+                    with open(p, "rb") as f:
+                        st.download_button(
+                            f"Baixar {a.nome_arquivo}",
+                            f,
+                            file_name=a.nome_arquivo,
+                            key=f"sol_anexo_{a.id}",
+                        )
+
+        if st.session_state.perfil in ["admin", "almoxarifado", "aprovador"]:
+            st.markdown("### Alterar status")
+            novo_status = st.selectbox("Status", ["ABERTA", "EM_ANALISE", "CONVERTIDA", "CANCELADA"])
+            if st.button("Salvar status", use_container_width=True):
+                alterar_status_solicitacao(solicitacao_id, novo_status)
+                st.success("Status atualizado.")
+                st.rerun()
+                
+                
 def tela_novo_pedido():
     st.subheader('📝 Novo Pedido de Compra')
     if st.session_state.perfil not in ['admin', 'almoxarifado', 'aprovador']:
@@ -310,7 +479,7 @@ def tela_novo_pedido():
                 adir=Path('shop_data')/'anexos'/numero; adir.mkdir(parents=True,exist_ok=True)
                 for arq in anexos:
                     dest=adir/arq.name; dest.write_bytes(arq.getbuffer()); inserir_anexo(pedido_id,arq.name,str(dest),st.session_state.usuario)
-                total=sum(i['valor_total'] for i in st.session_state.itens_novo_pedido); pdf=gerar_pdf_pedido(pedido_id); msg=mensagem_pedido_criado(numero,pedido_id,st.session_state.usuario,fornecedor_nome,valor_moeda(total),prioridade); notificar('Pedido criado',pedido_id,numero,msg,st.session_state.usuario,pdf,f'📄 Ordem de Compra {numero}',enviar_anexos_telegram=True); tipo_orcamento=obter_tipo_orcamento_para_pedido(data.year,data.month,centro_custo_id); verificar_alerta_orcamento(data.year,data.month,centro_custo_id,tipo_orcamento,numero)
+                total=sum(i['valor_total'] for i in st.session_state.itens_novo_pedido); pdf=gerar_pdf_pedido(pedido_id); msg=mensagem_pedido_criado(numero,pedido_id,st.session_state.usuario,fornecedor_nome,valor_moeda(total),prioridade); notificar('Pedido criado',pedido_id,numero,msg,st.session_state.usuario,pdf,f'📄 Ordem de Compra {numero}',enviar_anexos_telegram=True,enviar_email=True); tipo_orcamento=obter_tipo_orcamento_para_pedido(data.year,data.month,centro_custo_id); verificar_alerta_orcamento(data.year,data.month,centro_custo_id,tipo_orcamento,numero)
                 st.session_state.itens_novo_pedido=[]; st.success(f'Pedido {numero} criado.'); st.rerun()
 
 def tela_pedidos():
@@ -346,7 +515,16 @@ def tela_pedidos():
         st.success('Anexos salvos.'); st.rerun()
     st.divider(); st.subheader('✅ Aprovação / Status'); c1,c2,c3,c4=st.columns(4)
     def mudar(ns,leg):
-        alterar_status(pedido_id,ns,st.session_state.usuario); pdf2=gerar_pdf_pedido(pedido_id); msg=mensagem_status_alterado(pedido['numero'],pedido_id,ns,st.session_state.usuario,pedido['prioridade']); notificar(f'Status {ns}',pedido_id,pedido['numero'],msg,st.session_state.usuario,pdf2,leg); st.success(f'Pedido marcado como {ns}.'); st.rerun()
+        alterar_status(pedido_id,ns,st.session_state.usuario)
+        pdf2=gerar_pdf_pedido(pedido_id)
+        pedido_atualizado=buscar_pedido(pedido_id) or pedido
+        msg=mensagem_status_alterado(pedido['numero'],pedido_id,ns,st.session_state.usuario,pedido['prioridade'])
+        enviar_email_status = ns == 'Recebido'
+        if enviar_email_status:
+            msg += "\nPDF anexado com fornecedor e histórico/logs atualizados.\n"
+        notificar(f'Status {ns}',pedido_id,pedido['numero'],msg,st.session_state.usuario,pdf2,leg,enviar_email=enviar_email_status)
+        st.success(f'Pedido marcado como {ns}.')
+        st.rerun()
     with c1:
         if tem_permissao_aprovar():
             if st.button('✅ Aprovar'): mudar('Aprovado',f"✅ Pedido {pedido['numero']} aprovado")
@@ -1042,6 +1220,6 @@ def main():
         st.sidebar.warning("Telegram não configurado")
     if st.sidebar.button('Sair'): st.session_state.clear(); st.rerun()
     st.title('🛒 Gerenciador de Compras')
-    menu=st.sidebar.radio('Menu',['Dashboard','Novo Pedido','Pedidos','Notificações','Produtos','Fornecedores','Centro de custo / Orçamento','Configurações'])
-    {'Dashboard':tela_dashboard,'Novo Pedido':tela_novo_pedido,'Pedidos':tela_pedidos,'Notificações':tela_notificacoes,'Produtos':tela_produtos,'Fornecedores':tela_fornecedores,'Centro de custo / Orçamento':tela_centros_custo_orcamento,'Configurações':tela_configuracoes}[menu]()
+    menu=st.sidebar.radio('Menu',['Dashboard','Solicitações','Novo Pedido','Pedidos','Notificações','Produtos','Fornecedores','Centro de custo / Orçamento','Configurações'])
+    {'Dashboard':tela_dashboard,'Solicitações':tela_solicitacoes,'Novo Pedido':tela_novo_pedido,'Pedidos':tela_pedidos,'Notificações':tela_notificacoes,'Produtos':tela_produtos,'Fornecedores':tela_fornecedores,'Centro de custo / Orçamento':tela_centros_custo_orcamento,'Configurações':tela_configuracoes}[menu]()
 if __name__=='__main__': main()

@@ -1246,12 +1246,13 @@ def tela_compras_integrada():
 
     menu_compras = st.radio(
         "Menu de compras",
-        ["Dashboard", "Novo Pedido", "Pedidos", "Notificações", "Produtos", "Fornecedores", "Centro de custo", "Configurações"],
+        ["Dashboard","Solicitações", "Novo Pedido", "Pedidos", "Notificações", "Produtos", "Fornecedores", "Centro de custo", "Configurações"],
         horizontal=True,
     )
 
     paginas = {
         "Dashboard": shop_manager.tela_dashboard,
+        "Solicitações": shop_manager.tela_solicitacoes,
         "Novo Pedido": shop_manager.tela_novo_pedido,
         "Pedidos": shop_manager.tela_pedidos,
         "Notificações": shop_manager.tela_notificacoes,
