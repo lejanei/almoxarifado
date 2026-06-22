@@ -1798,58 +1798,151 @@ def order_page(tipo, titulo):
         df = get_orders(tipo)
         if df.empty:
             st.info("Nenhuma ordem cadastrada.")
+        elif machines_df.empty:
+            st.warning("Cadastre máquinas antes de editar ordens.")
         else:
-            ord_map = {f"Ordem {int(r['id'])} - {r['maquina']}": r for _, r in df.iterrows()}
+            ord_map = {
+                f"Ordem {int(r['id'])} - {r['maquina']} - {r['status']}": r
+                for _, r in df.iterrows()
+            }
             labels = list(ord_map.keys())
 
             default_index = 0
             selected_id = st.session_state.get(state_key)
             if selected_id is not None:
                 for i, (_, r) in enumerate(ord_map.items()):
-                    if int(r["id"]) == int(selected_id):
-                        default_index = i
-                        break
+                    try:
+                        if int(r["id"]) == int(selected_id):
+                            default_index = i
+                            break
+                    except Exception:
+                        pass
 
-            sel = st.selectbox("Selecione a ordem", labels, index=default_index, key=f"ed_{tipo}")
+            sel = st.selectbox(
+                "Selecione a ordem",
+                labels,
+                index=default_index,
+                key=f"ed_{tipo}",
+            )
             row = ord_map[sel]
+            order_id_atual = int(row["id"])
+            st.session_state[state_key] = order_id_atual
 
-            maq_map = {f"ID {int(r['id'])} - {r['nome']}": int(r["id"]) for _, r in machines_df.iterrows()}
-            machine_label = next((k for k, v in maq_map.items() if v == int(row["machine_id"])), list(maq_map.keys())[0])
+            maq_map = {
+                f"ID {int(r['id'])} - {r['nome']}": int(r["id"])
+                for _, r in machines_df.iterrows()
+            }
 
-            with st.form(f"editar_ordem_{tipo}"):
-                maquina = st.selectbox("Máquina", list(maq_map.keys()), index=list(maq_map.keys()).index(machine_label))
-                start_dt = pd.to_datetime(row["start_datetime"])
-                end_dt = pd.to_datetime(row["end_datetime"]) if pd.notna(row["end_datetime"]) else pd.Timestamp.now()
+            machine_label = next(
+                (
+                    k
+                    for k, v in maq_map.items()
+                    if int(v) == int(row["machine_id"])
+                ),
+                list(maq_map.keys())[0],
+            )
+
+            start_dt = pd.to_datetime(row.get("start_datetime"), errors="coerce")
+            end_dt = pd.to_datetime(row.get("end_datetime"), errors="coerce")
+
+            if pd.isna(start_dt):
+                data_inicio_atual = date.today()
+                hora_inicio_atual = now_br().time().replace(second=0, microsecond=0)
+            else:
+                data_inicio_atual = start_dt.date()
+                hora_inicio_atual = start_dt.time().replace(second=0, microsecond=0)
+
+            if pd.isna(end_dt):
+                data_fim_atual = date.today()
+                hora_fim_atual = now_br().time().replace(second=0, microsecond=0)
+            else:
+                data_fim_atual = end_dt.date()
+                hora_fim_atual = end_dt.time().replace(second=0, microsecond=0)
+
+            with st.form(f"editar_ordem_{tipo}_{order_id_atual}"):
+                maquina = st.selectbox(
+                    "Máquina",
+                    list(maq_map.keys()),
+                    index=list(maq_map.keys()).index(machine_label),
+                    key=f"edi_{tipo}_{order_id_atual}_maquina",
+                )
 
                 c1, c2 = st.columns(2)
-                data_inicio = c1.date_input("Data início", value=start_dt.date(), key=f"edi_{tipo}_1")
-                hora_inicio = c2.time_input("Hora início", value=start_dt.time(), key=f"edi_{tipo}_2")
+                data_inicio = c1.date_input(
+                    "Data início",
+                    value=data_inicio_atual,
+                    format="DD/MM/YYYY",
+                    key=f"edi_{tipo}_{order_id_atual}_data_inicio",
+                )
+                hora_inicio = c2.time_input(
+                    "Hora início",
+                    value=hora_inicio_atual,
+                    key=f"edi_{tipo}_{order_id_atual}_hora_inicio",
+                )
 
                 c3, c4 = st.columns(2)
-                data_fim = c3.date_input("Data fim", value=end_dt.date(), key=f"edi_{tipo}_3")
-                hora_fim = c4.time_input("Hora fim", value=end_dt.time(), key=f"edi_{tipo}_4")
+                data_fim = c3.date_input(
+                    "Data fim",
+                    value=data_fim_atual,
+                    format="DD/MM/YYYY",
+                    key=f"edi_{tipo}_{order_id_atual}_data_fim",
+                )
+                hora_fim = c4.time_input(
+                    "Hora fim",
+                    value=hora_fim_atual,
+                    key=f"edi_{tipo}_{order_id_atual}_hora_fim",
+                )
 
-                problema = st.text_area("Descrição do problema", value="" if pd.isna(row["problem_description"]) else str(row["problem_description"]))
+                problema = st.text_area(
+                    "Descrição do problema",
+                    value="" if pd.isna(row.get("problem_description")) else str(row.get("problem_description") or ""),
+                    key=f"edi_{tipo}_{order_id_atual}_problema",
+                )
+
                 centro_custo_id = select_cost_center_with_current(
                     "Centro de custo da ordem",
                     row.get("centro_custo_id", None),
-                    key=f"edi_{tipo}_cc",
+                    key=f"edi_{tipo}_{order_id_atual}_cc",
                 )
+
                 status_opts = ["Aberta", "Em andamento", "Finalizada", "Cancelada"]
-                status = st.selectbox("Status", status_opts, index=status_opts.index(row["status"]) if row["status"] in status_opts else 0, key=f"edi_{tipo}_5")
-                solucao = st.text_area("Descrição da solução", value="" if pd.isna(row["solution_description"]) else str(row["solution_description"]))
+                status_atual = str(row.get("status") or "Aberta")
+                status = st.selectbox(
+                    "Status",
+                    status_opts,
+                    index=status_opts.index(status_atual) if status_atual in status_opts else 0,
+                    key=f"edi_{tipo}_{order_id_atual}_status",
+                )
+
+                solucao = st.text_area(
+                    "Descrição da solução",
+                    value="" if pd.isna(row.get("solution_description")) else str(row.get("solution_description") or ""),
+                    key=f"edi_{tipo}_{order_id_atual}_solucao",
+                )
 
                 if st.form_submit_button("Atualizar ordem", use_container_width=True):
+                    start_dt_salvar = combine_date_time(data_inicio, hora_inicio)
+                    end_dt_salvar = combine_date_time(data_fim, hora_fim)
+
                     update_order(
-                        int(row["id"]),
+                        order_id_atual,
                         maq_map[maquina],
-                        combine_date_time(data_inicio, hora_inicio),
-                        combine_date_time(data_fim, hora_fim),
+                        start_dt_salvar,
+                        end_dt_salvar,
                         problema,
                         status,
                         solucao,
                         centro_custo_id,
                     )
+
+                    log_action(
+                        user["usuario"],
+                        "Atualizou ordem",
+                        "service_orders",
+                        order_id_atual,
+                        f"Status: {status}",
+                    )
+
                     st.success("Ordem atualizada.")
                     st.rerun()
 
