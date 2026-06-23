@@ -1021,6 +1021,88 @@ def add_part_to_order(order_id, product_id, quantidade, usuario_lancamento):
             },
         )
 
+def delete_employee_from_order(vinculo_id, usuario_lancamento):
+    execute(
+        "DELETE FROM service_order_employees WHERE id=:id",
+        {"id": int(vinculo_id)},
+    )
+    log_action(
+        usuario_lancamento,
+        "Removeu funcionário da ordem",
+        "service_order_employees",
+        vinculo_id,
+        "Funcionário desvinculado da OS",
+    )
+
+
+def delete_part_from_order(vinculo_id, usuario_lancamento):
+    with get_engine().begin() as conn:
+        part = conn.execute(
+            text("""
+                SELECT id, order_id, product_id, quantidade
+                FROM service_order_parts
+                WHERE id=:id
+            """),
+            {"id": int(vinculo_id)},
+        ).mappings().first()
+
+        if not part:
+            return
+
+        product_id = int(part["product_id"])
+        quantidade = float(part["quantidade"])
+        order_id = int(part["order_id"])
+
+        produto = conn.execute(
+            text("SELECT id, estoque_atual FROM products WHERE id=:id FOR UPDATE"),
+            {"id": product_id},
+        ).mappings().first()
+
+        if produto:
+            novo_estoque = float(produto["estoque_atual"] or 0) + quantidade
+
+            conn.execute(
+                text("""
+                    UPDATE products
+                    SET estoque_atual=:estoque,
+                        atualizado_em=:agora
+                    WHERE id=:id
+                """),
+                {
+                    "estoque": novo_estoque,
+                    "agora": now_br(),
+                    "id": product_id,
+                },
+            )
+
+            conn.execute(
+                text("""
+                    INSERT INTO movements
+                    (produto_id, tipo, quantidade, observacao, usuario_lancamento, criado_em)
+                    VALUES
+                    (:produto_id, 'ENTRADA', :quantidade, :observacao, :usuario_lancamento, :criado_em)
+                """),
+                {
+                    "produto_id": product_id,
+                    "quantidade": quantidade,
+                    "observacao": f"Devolução de peça removida da ordem {order_id}",
+                    "usuario_lancamento": usuario_lancamento,
+                    "criado_em": now_br(),
+                },
+            )
+
+        conn.execute(
+            text("DELETE FROM service_order_parts WHERE id=:id"),
+            {"id": int(vinculo_id)},
+        )
+
+    log_action(
+        usuario_lancamento,
+        "Removeu peça da ordem",
+        "service_order_parts",
+        vinculo_id,
+        f"Peça removida da OS e estoque devolvido: {quantidade}",
+    )
 
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
@@ -1997,7 +2079,28 @@ def order_page(tipo, titulo):
                 if not order_emp.empty:
                     order_emp["Tempo"] = order_emp.apply(lambda r: format_duration(r["start_datetime"], r["end_datetime"]), axis=1)
                     st.dataframe(order_emp.rename(columns={"id":"ID vínculo","funcionario_id":"ID funcionário","nome":"Nome","setor":"Setor","funcao":"Função","start_datetime":"Início","end_datetime":"Fim"}), use_container_width=True, hide_index=True)
+                    
+                    st.markdown("#### Remover funcionário vinculado")
+                    emp_del_map = {
+                        f"ID vínculo {int(r['id'])} - {r['nome']}": int(r["id"])
+                        for _, r in order_emp.iterrows()
+                    }
+                    emp_del = st.selectbox(
+                        "Funcionário vinculado",
+                        list(emp_del_map.keys()),
+                        key=f"del_emp_{tipo}_{order_id}",
+                    )
 
+                    if st.button(
+                        "Remover funcionário desta ordem",
+                        key=f"btn_del_emp_{tipo}_{order_id}",
+                        use_container_width=True,
+                    ):
+                        delete_employee_from_order(emp_del_map[emp_del], user["usuario"])
+                        st.success("Funcionário removido da ordem.")
+                        st.rerun()
+                
+                
             with cb:
                 st.markdown("### Peças utilizadas")
                 if not products_df.empty:
@@ -2012,7 +2115,27 @@ def order_page(tipo, titulo):
                 order_parts = get_order_parts(order_id)
                 if not order_parts.empty:
                     st.dataframe(order_parts.rename(columns={"id":"ID vínculo","peca_id":"ID peça","nome":"Peça","quantidade":"Quantidade","unidade":"Unidade"}), use_container_width=True, hide_index=True)
+                                
+                
+                    st.markdown("#### Remover peça lançada")
+                    part_del_map = {
+                        f"ID vínculo {int(r['id'])} - {r['nome']} | {r['quantidade']} {r['unidade']}": int(r["id"])
+                        for _, r in order_parts.iterrows()
+                    }
+                    part_del = st.selectbox(
+                        "Peça lançada",
+                        list(part_del_map.keys()),
+                        key=f"del_part_{tipo}_{order_id}",
+                    )
 
+                    if st.button(
+                        "Remover peça e devolver ao estoque",
+                        key=f"btn_del_part_{tipo}_{order_id}",
+                        use_container_width=True,
+                    ):
+                        delete_part_from_order(part_del_map[part_del], user["usuario"])
+                        st.success("Peça removida da ordem e estoque devolvido.")
+                        st.rerun()
     with tabs[4]:
         st.markdown("### Filtros")
         c1, c2, c3, c4 = st.columns(4)
