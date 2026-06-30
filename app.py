@@ -55,6 +55,14 @@ PLANTAS_DB = {
     },
 }
 
+TIPOS_MANUTENCAO = [
+    "Corretiva",
+    "Melhoria",
+    "Rotina",
+    "Rotina Preventiva",
+    "Qualidade",
+]
+
 
 def normalizar_chave_planta(valor):
     texto = str(valor or PLANTA_PADRAO).strip().upper()
@@ -344,6 +352,8 @@ def init_db():
             "ALTER TABLE pedidos ADD COLUMN centro_custo_id INT NULL",
             "ALTER TABLE pedidos ADD COLUMN tipo_orcamento VARCHAR(20) NOT NULL DEFAULT 'OPEX'",
             "ALTER TABLE orcamentos_mensais ADD COLUMN tipo_orcamento VARCHAR(20) NOT NULL DEFAULT 'OPEX'",
+            "ALTER TABLE service_orders ADD COLUMN gera_parada TINYINT(1) NOT NULL DEFAULT 1",
+            "ALTER TABLE service_orders ADD COLUMN tipo_manutencao VARCHAR(50) DEFAULT 'Corretiva'",
         ]:
             try:
                 conn.execute(text(sql))
@@ -390,7 +400,7 @@ def get_audit_logs(limit=200, usuario=None):
 
 def get_user_opened_orders(username):
     return fetch_df(
-        "SELECT id, tipo, opened_by, machine_id, start_datetime, end_datetime, problem_description, status, solution_description, created_at, updated_at FROM service_orders WHERE opened_by = :username ORDER BY id DESC",
+        "SELECT id, tipo, opened_by, machine_id, start_datetime, end_datetime, problem_description, gera_parada, status, solution_description, created_at, updated_at FROM service_orders WHERE opened_by = :username ORDER BY id DESC",
         {"username": username},
     )
 
@@ -747,7 +757,7 @@ def delete_employee_record(emp_id):
 
 def get_orders(tipo):
     return fetch_df(
-        "SELECT so.id,so.tipo,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo ORDER BY so.id DESC",
+        "SELECT so.id,so.tipo,so.tipo_manutencao,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.gera_parada,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo ORDER BY so.id DESC",
         {"tipo": tipo},
     )
 
@@ -864,7 +874,7 @@ def get_orders_filtered(
     tipo, machine_id=None, status=None, date_from=None, date_to=None
 ):
     params = {"tipo": tipo}
-    sql = "SELECT so.id,so.tipo,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo"
+    sql = "SELECT so.id,so.tipo,so.tipo_manutencao,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo"
     if machine_id is not None:
         sql += " AND so.machine_id=:machine_id"
         params["machine_id"] = machine_id
@@ -891,19 +901,28 @@ def create_order(
     status,
     solution_description,
     centro_custo_id=None,
+    gera_parada=True,
+    tipo_manutencao="Corretiva",
 ):
     res = execute(
-        "INSERT INTO service_orders (tipo,opened_by,machine_id,centro_custo_id,start_datetime,end_datetime,problem_description,status,solution_description,created_at,updated_at) VALUES (:tipo,:opened_by,:machine_id,:centro_custo_id,:start_datetime,:end_datetime,:problem_description,:status,:solution_description,:created_at,:updated_at)",
+        """
+        INSERT INTO service_orders
+        (tipo,opened_by,machine_id,centro_custo_id,gera_parada,tipo_manutencao,start_datetime,end_datetime,problem_description,status,solution_description,created_at,updated_at)
+        VALUES
+        (:tipo,:opened_by,:machine_id,:centro_custo_id,:gera_parada,:tipo_manutencao,:start_datetime,:end_datetime,:problem_description,:status,:solution_description,:created_at,:updated_at)
+        """,
         {
             "tipo": tipo,
             "opened_by": opened_by,
             "machine_id": machine_id,
             "centro_custo_id": centro_custo_id,
+            "gera_parada": 1 if gera_parada else 0,
+            "tipo_manutencao": tipo_manutencao,
             "start_datetime": start_dt,
             "end_datetime": end_dt,
-            "problem_description": problem_description.strip(),
+            "problem_description": str(problem_description or "").strip(),
             "status": status,
-            "solution_description": solution_description.strip(),
+            "solution_description": str(solution_description or "").strip(),
             "created_at": now_br(),
             "updated_at": now_br(),
         },
@@ -920,18 +939,36 @@ def update_order(
     status,
     solution_description,
     centro_custo_id=None,
+    gera_parada=True,
+    tipo_manutencao="Corretiva",
 ):
     execute(
-        "UPDATE service_orders SET machine_id=:machine_id,centro_custo_id=:centro_custo_id,start_datetime=:start_datetime,end_datetime=:end_datetime,problem_description=:problem_description,status=:status,solution_description=:solution_description,updated_at=:updated_at WHERE id=:id",
+        """
+        UPDATE service_orders
+        SET
+            machine_id=:machine_id,
+            centro_custo_id=:centro_custo_id,
+            gera_parada=:gera_parada,
+            tipo_manutencao=:tipo_manutencao,
+            start_datetime=:start_datetime,
+            end_datetime=:end_datetime,
+            problem_description=:problem_description,
+            status=:status,
+            solution_description=:solution_description,
+            updated_at=:updated_at
+        WHERE id=:id
+        """,
         {
-            "id": order_id,
-            "machine_id": machine_id,
+            "id": int(order_id),
+            "machine_id": int(machine_id),
             "centro_custo_id": centro_custo_id,
+            "gera_parada": 1 if gera_parada else 0,
+            "tipo_manutencao": tipo_manutencao,
             "start_datetime": start_dt,
             "end_datetime": end_dt,
-            "problem_description": problem_description.strip(),
-            "status": status,
-            "solution_description": solution_description.strip(),
+            "problem_description": str(problem_description or "").strip(),
+            "status": str(status or "Aberta").strip(),
+            "solution_description": str(solution_description or "").strip(),
             "updated_at": now_br(),
         },
     )
@@ -1833,6 +1870,7 @@ def order_page(tipo, titulo):
             with st.form(f"nova_ordem_{tipo}", clear_on_submit=True):
                 maq_map = {f"ID {int(r['id'])} - {r['nome']}": int(r["id"]) for _, r in machines_df.iterrows()}
                 maquina = st.selectbox("Máquina", list(maq_map.keys()))
+                tipo_manutencao = st.selectbox("Tipo da manutenção",TIPOS_MANUTENCAO,key=f"novo_tipo_manutencao_{tipo}",)            
                 c1, c2 = st.columns(2)
                 data_inicio = c1.date_input("Data início", value=date.today(), key=f"di_{tipo}")
                 hora_inicio = c2.time_input("Hora início", key=f"hi_{tipo}")
@@ -1840,6 +1878,11 @@ def order_page(tipo, titulo):
                 data_fim = c3.date_input("Data fim", value=date.today(), key=f"df_{tipo}")
                 hora_fim = c4.time_input("Hora fim", key=f"hf_{tipo}")
                 problema = st.text_area("Descrição do problema")
+                gera_parada = st.checkbox(
+                    "Gerou parada de máquina?",
+                    value=True,
+                    help="Marque Sim quando a máquina ficou parada por causa desta OS."
+                )
                 centro_custo_id = select_cost_center("Centro de custo da ordem", key=f"cc_ordem_{tipo}")
                 status = st.selectbox("Status", ["Aberta", "Em andamento", "Finalizada", "Cancelada"], key=f"st_{tipo}")
                 solucao = st.text_area("Descrição da solução")
@@ -1850,9 +1893,11 @@ def order_page(tipo, titulo):
                         tipo,
                         user["usuario"],
                         maq_map[maquina],
+                        tipo_manutencao,
                         start_dt,
                         end_dt,
                         problema,
+                        gera_parada,
                         status,
                         solucao,
                         centro_custo_id,
@@ -1864,7 +1909,7 @@ def order_page(tipo, titulo):
                             order_id,
                             tipo,
                             user["usuario"],
-                            maquina_nome,
+                            maquina_nome,                            
                             centro_custo_nome,
                             start_dt,
                             end_dt,
@@ -1923,6 +1968,17 @@ def order_page(tipo, titulo):
                 ),
                 list(maq_map.keys())[0],
             )
+            
+            tipo_manutencao_atual = str(row.get("tipo_manutencao") or "Corretiva")
+
+            tipo_manutencao = st.selectbox(
+                "Tipo da manutenção",
+                TIPOS_MANUTENCAO,
+                index=TIPOS_MANUTENCAO.index(tipo_manutencao_atual)
+                if tipo_manutencao_atual in TIPOS_MANUTENCAO
+                else 0,
+                key=f"edi_{tipo}_{order_id_atual}_tipo_manutencao",
+            )
 
             start_dt = pd.to_datetime(row.get("start_datetime"), errors="coerce")
             end_dt = pd.to_datetime(row.get("end_datetime"), errors="coerce")
@@ -1974,8 +2030,21 @@ def order_page(tipo, titulo):
                     value=hora_fim_atual,
                     key=f"edi_{tipo}_{order_id_atual}_hora_fim",
                 )
+                
+                gera_parada_banco = row.get("gera_parada", 0)
 
-                problema = st.text_area(
+                try:
+                    gera_parada_atual = int(gera_parada_banco or 0) == 1
+                except Exception:
+                    gera_parada_atual = False
+
+                gera_parada = st.checkbox(
+                    "Gerou parada de máquina?",
+                    value=gera_parada_atual,
+                    key=f"edit_gera_parada_{tipo}_{order_id_atual}_{int(gera_parada_atual)}",
+                )
+
+                problem_description = st.text_area(
                     "Descrição do problema",
                     value="" if pd.isna(row.get("problem_description")) else str(row.get("problem_description") or ""),
                     key=f"edi_{tipo}_{order_id_atual}_problema",
@@ -1996,7 +2065,7 @@ def order_page(tipo, titulo):
                     key=f"edi_{tipo}_{order_id_atual}_status",
                 )
 
-                solucao = st.text_area(
+                solution_description = st.text_area(
                     "Descrição da solução",
                     value="" if pd.isna(row.get("solution_description")) else str(row.get("solution_description") or ""),
                     key=f"edi_{tipo}_{order_id_atual}_solucao",
@@ -2007,14 +2076,16 @@ def order_page(tipo, titulo):
                     end_dt_salvar = combine_date_time(data_fim, hora_fim)
 
                     update_order(
-                        order_id_atual,
-                        maq_map[maquina],
-                        start_dt_salvar,
-                        end_dt_salvar,
-                        problema,
-                        status,
-                        solucao,
-                        centro_custo_id,
+                        order_id=int(row["id"]),
+                        machine_id=maq_map[maquina],
+                        start_dt=combine_date_time(data_inicio, hora_inicio),
+                        end_dt=combine_date_time(data_fim, hora_fim),
+                        problem_description=problem_description,
+                        status=status,
+                        solution_description=solution_description,
+                        centro_custo_id=centro_custo_id,
+                        gera_parada=gera_parada,
+                        tipo_manutencao=tipo_manutencao,
                     )
 
                     log_action(
