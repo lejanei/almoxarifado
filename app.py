@@ -1877,7 +1877,7 @@ def order_page(tipo, titulo):
                 c3, c4 = st.columns(2)
                 data_fim = c3.date_input("Data fim", value=date.today(), key=f"df_{tipo}")
                 hora_fim = c4.time_input("Hora fim", key=f"hf_{tipo}")
-                problema = st.text_area("Descrição do problema")
+                problem_description = st.text_area("Descrição do problema")
                 gera_parada = st.checkbox(
                     "Gerou parada de máquina?",
                     value=True,
@@ -1885,22 +1885,22 @@ def order_page(tipo, titulo):
                 )
                 centro_custo_id = select_cost_center("Centro de custo da ordem", key=f"cc_ordem_{tipo}")
                 status = st.selectbox("Status", ["Aberta", "Em andamento", "Finalizada", "Cancelada"], key=f"st_{tipo}")
-                solucao = st.text_area("Descrição da solução")
+                solution_description = st.text_area("Descrição da solução")
                 if st.form_submit_button("Salvar ordem", use_container_width=True):
                     start_dt = combine_date_time(data_inicio, hora_inicio)
                     end_dt = combine_date_time(data_fim, hora_fim)
                     order_id = create_order(
-                        tipo,
-                        user["usuario"],
-                        maq_map[maquina],
-                        tipo_manutencao,
-                        start_dt,
-                        end_dt,
-                        problema,
-                        gera_parada,
-                        status,
-                        solucao,
-                        centro_custo_id,
+                        tipo=tipo,
+                        opened_by=user["usuario"],
+                        machine_id=maq_map[maquina],
+                        start_dt=combine_date_time(data_inicio, hora_inicio),
+                        end_dt=combine_date_time(data_fim, hora_fim),
+                        problem_description=problem_description,
+                        status=status,
+                        solution_description=solution_description,
+                        centro_custo_id=centro_custo_id,
+                        gera_parada=gera_parada,
+                        tipo_manutencao=tipo_manutencao,
                     )
                     maquina_nome = maquina.split(" - ", 1)[1] if " - " in maquina else maquina
                     centro_custo_nome = get_cost_center_name_by_id(centro_custo_id)
@@ -1913,9 +1913,9 @@ def order_page(tipo, titulo):
                             centro_custo_nome,
                             start_dt,
                             end_dt,
-                            problema,
+                            problem_description,
                             status,
-                            solucao,
+                            solution_description,
                             planta=st.session_state.get("planta", PLANTA_PADRAO),
                         )
                     st.success("Ordem cadastrada.")
