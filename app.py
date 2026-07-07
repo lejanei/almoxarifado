@@ -7,6 +7,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text
 import shop_manager_app as shop_manager
 import producao_app as producao
+import streamlit.components.v1 as components
 
 try:
     from telegram_sender import enviar_telegram as enviar_telegram_configurado
@@ -327,6 +328,7 @@ def init_db():
             valor_unitario DECIMAL(18,4) NOT NULL DEFAULT 0,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS movements (id INT AUTO_INCREMENT PRIMARY KEY,produto_id INT NOT NULL,tipo VARCHAR(30) NOT NULL,quantidade DECIMAL(18,3) NOT NULL,observacao TEXT,usuario_lancamento VARCHAR(150),criado_em DATETIME NOT NULL,CONSTRAINT fk_movements_product FOREIGN KEY (produto_id) REFERENCES products(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS machines (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,status VARCHAR(50) NOT NULL DEFAULT 'Ativa',criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+                """CREATE TABLE IF NOT EXISTS problem_locations ( id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL, descricao TEXT,ativo TINYINT(1) NOT NULL DEFAULT 1,created_at DATETIME NOT NULL,updated_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS employees (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,setor VARCHAR(100),funcao VARCHAR(100),criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS service_orders (id INT AUTO_INCREMENT PRIMARY KEY,tipo VARCHAR(20) NOT NULL,opened_by VARCHAR(150) NOT NULL,machine_id INT NOT NULL,start_datetime DATETIME NOT NULL,end_datetime DATETIME NULL,problem_description TEXT,status VARCHAR(50) NOT NULL DEFAULT 'Aberta',solution_description TEXT,created_at DATETIME NOT NULL,updated_at DATETIME NULL,CONSTRAINT fk_so_machine FOREIGN KEY (machine_id) REFERENCES machines(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS service_order_employees (id INT AUTO_INCREMENT PRIMARY KEY,order_id INT NOT NULL,employee_id INT NOT NULL,start_datetime DATETIME NOT NULL,end_datetime DATETIME NULL,created_at DATETIME NOT NULL,CONSTRAINT fk_soe_order FOREIGN KEY (order_id) REFERENCES service_orders(id),CONSTRAINT fk_soe_employee FOREIGN KEY (employee_id) REFERENCES employees(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
@@ -354,6 +356,7 @@ def init_db():
             "ALTER TABLE orcamentos_mensais ADD COLUMN tipo_orcamento VARCHAR(20) NOT NULL DEFAULT 'OPEX'",
             "ALTER TABLE service_orders ADD COLUMN gera_parada TINYINT(1) NOT NULL DEFAULT 1",
             "ALTER TABLE service_orders ADD COLUMN tipo_manutencao VARCHAR(50) DEFAULT 'Corretiva'",
+            "ALTER TABLE service_orders ADD COLUMN problem_location_id INT NULL",
         ]:
             try:
                 conn.execute(text(sql))
@@ -714,6 +717,106 @@ def delete_machine_record(machine_id):
     if not uso.empty and int(uso.iloc[0]["total"]) > 0:
         raise ValueError("Esta máquina possui ordens vinculadas e não pode ser excluída.")
     execute("DELETE FROM machines WHERE id = :id", {"id": int(machine_id)})
+def get_problem_locations(only_active=False):
+    sql = "SELECT id, nome, descricao, ativo, created_at, updated_at FROM problem_locations"
+    if only_active:
+        sql += " WHERE ativo=1"
+    sql += " ORDER BY nome"
+    return fetch_df(sql)
+
+
+def create_problem_location(nome, descricao, ativo=True):
+    execute(
+        """
+        INSERT INTO problem_locations
+        (nome, descricao, ativo, created_at, updated_at)
+        VALUES
+        (:nome, :descricao, :ativo, :created_at, :updated_at)
+        """,
+        {
+            "nome": str(nome or "").strip(),
+            "descricao": str(descricao or "").strip(),
+            "ativo": 1 if ativo else 0,
+            "created_at": now_br(),
+            "updated_at": now_br(),
+        },
+    )
+
+
+def update_problem_location(location_id, nome, descricao, ativo=True):
+    execute(
+        """
+        UPDATE problem_locations
+        SET nome=:nome,
+            descricao=:descricao,
+            ativo=:ativo,
+            updated_at=:updated_at
+        WHERE id=:id
+        """,
+        {
+            "id": int(location_id),
+            "nome": str(nome or "").strip(),
+            "descricao": str(descricao or "").strip(),
+            "ativo": 1 if ativo else 0,
+            "updated_at": now_br(),
+        },
+    )
+
+
+def delete_problem_location(location_id):
+    uso = fetch_df(
+        "SELECT COUNT(*) AS total FROM service_orders WHERE problem_location_id=:id",
+        {"id": int(location_id)},
+    )
+
+    if not uso.empty and int(uso.iloc[0]["total"] or 0) > 0:
+        raise ValueError(
+            "Este local do problema já está vinculado a ordens de serviço. "
+            "Use Inativo para bloquear novos lançamentos."
+        )
+
+    execute(
+        "DELETE FROM problem_locations WHERE id=:id",
+        {"id": int(location_id)},
+    )
+
+
+def select_problem_location(label="Local do problema", current_id=None, key=None, allow_empty=True):
+    locais = get_problem_locations(only_active=True)
+
+    options = []
+    if allow_empty:
+        options.append("Sem local do problema")
+
+    if not locais.empty:
+        options += [
+            f"ID {int(r['id'])} - {r['nome']}"
+            for _, r in locais.iterrows()
+        ]
+
+    index = 0
+
+    if current_id is not None and not pd.isna(current_id) and not locais.empty:
+        try:
+            current_int = int(float(current_id))
+            for i, opt in enumerate(options):
+                if opt.startswith(f"ID {current_int} -"):
+                    index = i
+                    break
+        except Exception:
+            index = 0
+
+    selected = st.selectbox(
+        label,
+        options or ["Sem local do problema"],
+        index=index,
+        key=key,
+    )
+
+    if selected == "Sem local do problema":
+        return None
+
+    return int(selected.split(" - ")[0].replace("ID ", ""))
 
 def get_employees():
     return fetch_df(
@@ -757,7 +860,33 @@ def delete_employee_record(emp_id):
 
 def get_orders(tipo):
     return fetch_df(
-        "SELECT so.id,so.tipo,so.tipo_manutencao,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.gera_parada,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo ORDER BY so.id DESC",
+        """
+        SELECT 
+            so.id,
+            so.tipo,
+            so.tipo_manutencao,
+            so.opened_by,
+            m.nome AS maquina,
+            so.machine_id,
+            so.problem_location_id,
+            pl.nome AS local_problema,
+            so.centro_custo_id,
+            cc.nome AS centro_custo,
+            so.start_datetime,
+            so.end_datetime,
+            so.problem_description,
+            so.status,
+            so.gera_parada,
+            so.solution_description,
+            so.created_at,
+            so.updated_at
+        FROM service_orders so
+        INNER JOIN machines m ON m.id=so.machine_id
+        LEFT JOIN problem_locations pl ON pl.id=so.problem_location_id
+        LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id
+        WHERE so.tipo=:tipo
+        ORDER BY so.id DESC
+        """,
         {"tipo": tipo},
     )
 
@@ -874,7 +1003,32 @@ def get_orders_filtered(
     tipo, machine_id=None, status=None, date_from=None, date_to=None
 ):
     params = {"tipo": tipo}
-    sql = "SELECT so.id,so.tipo,so.tipo_manutencao,so.opened_by,m.nome AS maquina,so.machine_id,so.centro_custo_id,cc.nome AS centro_custo,so.start_datetime,so.end_datetime,so.problem_description,so.status,so.solution_description,so.created_at,so.updated_at FROM service_orders so INNER JOIN machines m ON m.id=so.machine_id LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id WHERE so.tipo=:tipo"
+    sql = """
+SELECT 
+    so.id,
+    so.tipo,
+    so.tipo_manutencao,
+    so.opened_by,
+    m.nome AS maquina,
+    so.machine_id,
+    so.problem_location_id,
+    pl.nome AS local_problema,
+    so.centro_custo_id,
+    cc.nome AS centro_custo,
+    so.start_datetime,
+    so.end_datetime,
+    so.problem_description,
+    so.status,
+    so.gera_parada,
+    so.solution_description,
+    so.created_at,
+    so.updated_at
+FROM service_orders so
+INNER JOIN machines m ON m.id=so.machine_id
+LEFT JOIN problem_locations pl ON pl.id=so.problem_location_id
+LEFT JOIN centros_custo cc ON cc.id=so.centro_custo_id
+WHERE so.tipo=:tipo
+"""
     if machine_id is not None:
         sql += " AND so.machine_id=:machine_id"
         params["machine_id"] = machine_id
@@ -903,25 +1057,57 @@ def create_order(
     centro_custo_id=None,
     gera_parada=True,
     tipo_manutencao="Corretiva",
+    problem_location_id=None,
 ):
     res = execute(
         """
         INSERT INTO service_orders
-        (tipo,opened_by,machine_id,centro_custo_id,gera_parada,tipo_manutencao,start_datetime,end_datetime,problem_description,status,solution_description,created_at,updated_at)
+        (
+            tipo,
+            opened_by,
+            machine_id,
+            centro_custo_id,
+            problem_location_id,
+            gera_parada,
+            tipo_manutencao,
+            start_datetime,
+            end_datetime,
+            problem_description,
+            status,
+            solution_description,
+            created_at,
+            updated_at
+        )
         VALUES
-        (:tipo,:opened_by,:machine_id,:centro_custo_id,:gera_parada,:tipo_manutencao,:start_datetime,:end_datetime,:problem_description,:status,:solution_description,:created_at,:updated_at)
+        (
+            :tipo,
+            :opened_by,
+            :machine_id,
+            :centro_custo_id,
+            :problem_location_id,
+            :gera_parada,
+            :tipo_manutencao,
+            :start_datetime,
+            :end_datetime,
+            :problem_description,
+            :status,
+            :solution_description,
+            :created_at,
+            :updated_at
+        )
         """,
         {
             "tipo": tipo,
             "opened_by": opened_by,
-            "machine_id": machine_id,
+            "machine_id": int(machine_id),
             "centro_custo_id": centro_custo_id,
+            "problem_location_id": problem_location_id,
             "gera_parada": 1 if gera_parada else 0,
             "tipo_manutencao": tipo_manutencao,
             "start_datetime": start_dt,
             "end_datetime": end_dt,
             "problem_description": str(problem_description or "").strip(),
-            "status": status,
+            "status": str(status or "Aberta").strip(),
             "solution_description": str(solution_description or "").strip(),
             "created_at": now_br(),
             "updated_at": now_br(),
@@ -941,6 +1127,7 @@ def update_order(
     centro_custo_id=None,
     gera_parada=True,
     tipo_manutencao="Corretiva",
+    problem_location_id=None,
 ):
     execute(
         """
@@ -948,6 +1135,7 @@ def update_order(
         SET
             machine_id=:machine_id,
             centro_custo_id=:centro_custo_id,
+            problem_location_id=:problem_location_id,
             gera_parada=:gera_parada,
             tipo_manutencao=:tipo_manutencao,
             start_datetime=:start_datetime,
@@ -962,6 +1150,7 @@ def update_order(
             "id": int(order_id),
             "machine_id": int(machine_id),
             "centro_custo_id": centro_custo_id,
+            "problem_location_id": problem_location_id,
             "gera_parada": 1 if gera_parada else 0,
             "tipo_manutencao": tipo_manutencao,
             "start_datetime": start_dt,
@@ -972,7 +1161,6 @@ def update_order(
             "updated_at": now_br(),
         },
     )
-
 
 def close_order(order_id, solution_description, end_dt):
     execute(
@@ -1013,6 +1201,47 @@ def get_order_parts(order_id):
         {"order_id": order_id},
     )
 
+def visualizar_ordem_streamlit(row, funcionarios, pecas):
+    st.divider()
+    st.markdown(f"## Ordem de Serviço #{int(row['id'])}")
+
+    c1, c2, c3 = st.columns(3)
+
+    with c1:
+        st.markdown(f"**Máquina:** {row.get('maquina', '')}")
+        st.markdown(f"**Tipo:** {row.get('tipo', '')}")
+        st.markdown(f"**Tipo manutenção:** {row.get('tipo_manutencao', '')}")
+        st.markdown(f"**Local do problema:** {row.get('local_problema', '')}")
+
+    with c2:
+        st.markdown(f"**Centro de custo:** {row.get('centro_custo', '')}")
+        st.markdown(f"**Gerou parada:** {'Sim' if int(row.get('gera_parada', 0) or 0) == 1 else 'Não'}")
+        st.markdown(f"**Status:** {row.get('status', '')}")
+        st.markdown(f"**Aberta por:** {row.get('opened_by', '')}")
+
+    with c3:
+        st.markdown(f"**Início:** {format_datetime_br(row.get('start_datetime'))}")
+        st.markdown(f"**Fim:** {format_datetime_br(row.get('end_datetime'))}")
+        st.markdown(f"**Criada em:** {format_datetime_br(row.get('created_at'))}")
+        st.markdown(f"**Atualizada em:** {format_datetime_br(row.get('updated_at'))}")
+
+    st.markdown("## Descrição do Problema")
+    st.write(row.get("problem_description", "") or "")
+
+    st.markdown("## Mão de Obra")
+    if funcionarios.empty:
+        st.info("Nenhum funcionário lançado.")
+    else:
+        st.dataframe(funcionarios, use_container_width=True, hide_index=True)
+
+    st.markdown("## Peças Utilizadas")
+    if pecas.empty:
+        st.info("Nenhuma peça lançada.")
+    else:
+        st.dataframe(pecas, use_container_width=True, hide_index=True)
+
+    st.markdown("## Solução")
+    st.write(row.get("solution_description", "") or "")
 
 def add_part_to_order(order_id, product_id, quantidade, usuario_lancamento):
     quantidade = float(quantidade)
@@ -1270,6 +1499,7 @@ products_df = get_products()
 users_df = get_users()
 machines_df = get_machines()
 employees_df = get_employees()
+problem_locations_df = get_problem_locations()
 criticos_df = get_critical_products()
 os_df = get_orders("CORRETIVA")
 pm_df = get_orders("PREVENTIVA")
@@ -1289,7 +1519,7 @@ with st.sidebar:
     common_menu = ["Dashboard", "Meu painel", "Ordem de serviço", "Ordem de preventiva", "Produção", "Dashboard executivo"]
     compras_menu = ["Compras", "Serviços"]
     almox_menu = ["Produtos / Estoque"] + compras_menu
-    admin_menu = ["Produtos / Estoque", "Máquinas", "Funcionários", "Usuários", "Auditoria"] + compras_menu
+    admin_menu = ["Produtos / Estoque", "Máquinas", "Funcionários", "Locais do Problema", "Usuários", "Auditoria"] + compras_menu
 
     if is_admin():
         menu_options = common_menu + admin_menu
@@ -1807,6 +2037,93 @@ elif menu == "Máquinas":
                     except Exception as e:
                         st.error(str(e))
 
+elif menu == "Locais do Problema":
+    require_permission(
+        can_manage_master_data(),
+        "Somente Administrador ou Almoxarifado pode acessar Locais do Problema.",
+    )
+
+    st.subheader("Locais do Problema")
+
+    t1, t2 = st.tabs(["Novo local", "Editar / Excluir"])
+
+    with t1:
+        with st.form("novo_local_problema", clear_on_submit=True):
+            c1, c2 = st.columns([2, 1])
+            nome = c1.text_input("Nome do local / componente")
+            ativo = c2.checkbox("Ativo", value=True)
+            descricao = st.text_area("Descrição")
+
+            if st.form_submit_button("Salvar local", use_container_width=True):
+                if not str(nome or "").strip():
+                    st.error("Informe o nome do local do problema.")
+                else:
+                    create_problem_location(nome, descricao, ativo)
+                    st.success("Local do problema cadastrado.")
+                    st.rerun()
+
+    with t2:
+        locais = get_problem_locations()
+
+        if locais.empty:
+            st.info("Nenhum local do problema cadastrado.")
+        else:
+            view = locais.copy()
+            view["ativo"] = view["ativo"].apply(lambda x: "Ativo" if int(x or 0) == 1 else "Inativo")
+
+            st.dataframe(
+                view.rename(
+                    columns={
+                        "id": "ID",
+                        "nome": "Nome",
+                        "descricao": "Descrição",
+                        "ativo": "Status",
+                        "created_at": "Criado em",
+                        "updated_at": "Atualizado em",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            loc_map = {
+                f"ID {int(r['id'])} - {r['nome']}": r
+                for _, r in locais.iterrows()
+            }
+
+            sel = st.selectbox("Selecionar local", list(loc_map.keys()))
+            row = loc_map[sel]
+
+            with st.form("editar_local_problema"):
+                c1, c2 = st.columns([2, 1])
+                nome = c1.text_input("Nome", value=str(row["nome"]))
+                ativo = c2.checkbox("Ativo", value=bool(int(row["ativo"] or 0)))
+                descricao = st.text_area(
+                    "Descrição",
+                    value="" if pd.isna(row["descricao"]) else str(row["descricao"] or ""),
+                )
+
+                b1, b2 = st.columns(2)
+
+                with b1:
+                    salvar = st.form_submit_button("Atualizar local", use_container_width=True)
+
+                with b2:
+                    excluir = st.form_submit_button("Excluir local", use_container_width=True)
+
+                if salvar:
+                    update_problem_location(int(row["id"]), nome, descricao, ativo)
+                    st.success("Local do problema atualizado.")
+                    st.rerun()
+
+                if excluir:
+                    try:
+                        delete_problem_location(int(row["id"]))
+                        st.success("Local do problema excluído.")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(str(e))
+
 elif menu == "Funcionários":
     require_permission(can_manage_master_data(), "Somente Administrador ou Almoxarifado pode acessar Funcionários.")
     st.subheader("Funcionários")
@@ -1861,7 +2178,7 @@ def order_page(tipo, titulo):
 
     df_all = get_orders(tipo)
 
-    tabs = st.tabs(["Nova ordem", "Editar ordem", "Fechamento", "Equipe / Peças", "Consulta", "Excluir ordem"])
+    tabs = st.tabs(["Nova ordem", "Editar ordem", "Consulta", "Excluir ordem"])
 
     with tabs[0]:
         if machines_df.empty:
@@ -1870,7 +2187,11 @@ def order_page(tipo, titulo):
             with st.form(f"nova_ordem_{tipo}", clear_on_submit=True):
                 maq_map = {f"ID {int(r['id'])} - {r['nome']}": int(r["id"]) for _, r in machines_df.iterrows()}
                 maquina = st.selectbox("Máquina", list(maq_map.keys()))
-                tipo_manutencao = st.selectbox("Tipo da manutenção",TIPOS_MANUTENCAO,key=f"novo_tipo_manutencao_{tipo}",)            
+                tipo_manutencao = st.selectbox("Tipo da manutenção",TIPOS_MANUTENCAO,key=f"novo_tipo_manutencao_{tipo}",)
+                problem_location_id = select_problem_location(
+                    "Local do problema",
+                    key=f"novo_local_problema_{tipo}",
+                )            
                 c1, c2 = st.columns(2)
                 data_inicio = c1.date_input("Data início", value=date.today(), key=f"di_{tipo}")
                 hora_inicio = c2.time_input("Hora início", key=f"hi_{tipo}")
@@ -1901,6 +2222,7 @@ def order_page(tipo, titulo):
                         centro_custo_id=centro_custo_id,
                         gera_parada=gera_parada,
                         tipo_manutencao=tipo_manutencao,
+                        problem_location_id=problem_location_id,
                     )
                     maquina_nome = maquina.split(" - ", 1)[1] if " - " in maquina else maquina
                     centro_custo_nome = get_cost_center_name_by_id(centro_custo_id)
@@ -1978,6 +2300,12 @@ def order_page(tipo, titulo):
                 if tipo_manutencao_atual in TIPOS_MANUTENCAO
                 else 0,
                 key=f"edi_{tipo}_{order_id_atual}_tipo_manutencao",
+            )
+            
+            problem_location_id = select_problem_location(
+                "Local do problema",
+                current_id=row.get("problem_location_id", None),
+                key=f"edi_{tipo}_{order_id_atual}_local_problema",
             )
 
             start_dt = pd.to_datetime(row.get("start_datetime"), errors="coerce")
@@ -2086,6 +2414,7 @@ def order_page(tipo, titulo):
                         centro_custo_id=centro_custo_id,
                         gera_parada=gera_parada,
                         tipo_manutencao=tipo_manutencao,
+                        problem_location_id=problem_location_id,
                     )
 
                     log_action(
@@ -2098,116 +2427,183 @@ def order_page(tipo, titulo):
 
                     st.success("Ordem atualizada.")
                     st.rerun()
-
-    with tabs[2]:
-        df_close = get_orders_filtered(tipo, status="TODOS")
-        if not df_close.empty:
-            df_close = df_close[df_close["status"].isin(["Aberta", "Em andamento"])]
-        if df_close.empty:
-            st.info("Nenhuma ordem aberta ou em andamento para fechamento.")
-        else:
-            ord_map = {f"Ordem {int(r['id'])} - {r['maquina']} - {r['status']}": r for _, r in df_close.iterrows()}
-            sel = st.selectbox("Selecione a ordem para fechar", list(ord_map.keys()), key=f"close_{tipo}")
-            row = ord_map[sel]
-            with st.form(f"fechar_ordem_{tipo}"):
-                c1, c2 = st.columns(2)
-                data_fim = c1.date_input("Data final", value=date.today(), key=f"fech_df_{tipo}")
-                hora_fim = c2.time_input("Hora final", key=f"fech_hf_{tipo}")
-                solucao = st.text_area("Descrição final da solução", value="" if pd.isna(row["solution_description"]) else str(row["solution_description"]))
-                if st.form_submit_button("Fechar ordem", use_container_width=True):
-                    close_order(int(row["id"]), solucao, combine_date_time(data_fim, hora_fim))
-                    st.success("Ordem finalizada com sucesso.")
-                    st.rerun()
-
-    with tabs[3]:
-        df = get_orders(tipo)
-        if df.empty:
-            st.info("Nenhuma ordem cadastrada.")
-        else:
-            ord_map = {f"Ordem {int(r['id'])} - {r['maquina']}": int(r["id"]) for _, r in df.iterrows()}
-            order_label = st.selectbox("Ordem", list(ord_map.keys()), key=f"ges_{tipo}")
-            order_id = ord_map[order_label]
+                    
+            st.divider()
+            st.markdown("## Equipe e Peças da Ordem")
 
             ca, cb = st.columns(2)
 
             with ca:
                 st.markdown("### Funcionários")
-                if not employees_df.empty:
-                    with st.form(f"func_ordem_{tipo}", clear_on_submit=True):
-                        emp_map = {f"ID {int(r['id'])} - {r['nome']}": int(r["id"]) for _, r in employees_df.iterrows()}
-                        emp = st.selectbox("Funcionário", list(emp_map.keys()), key=f"emp_{tipo}")
+
+                if employees_df.empty:
+                    st.info("Nenhum funcionário cadastrado.")
+                else:
+                    with st.form(f"func_ordem_edit_{tipo}_{order_id_atual}", clear_on_submit=True):
+                        emp_map = {
+                            f"ID {int(r['id'])} - {r['nome']}": int(r["id"])
+                            for _, r in employees_df.iterrows()
+                        }
+
+                        emp = st.selectbox(
+                            "Funcionário",
+                            list(emp_map.keys()),
+                            key=f"emp_edit_{tipo}_{order_id_atual}",
+                        )
+
                         c1, c2 = st.columns(2)
-                        di = c1.date_input("Data início", value=date.today(), key=f"empdi_{tipo}")
-                        hi = c2.time_input("Hora início", key=f"emphi_{tipo}")
+                        di = c1.date_input(
+                            "Data início",
+                            value=date.today(),
+                            key=f"empdi_edit_{tipo}_{order_id_atual}",
+                        )
+                        hi = c2.time_input(
+                            "Hora início",
+                            key=f"emphi_edit_{tipo}_{order_id_atual}",
+                        )
+
                         c3, c4 = st.columns(2)
-                        dfim = c3.date_input("Data fim", value=date.today(), key=f"empdf_{tipo}")
-                        hfim = c4.time_input("Hora fim", key=f"emphf_{tipo}")
+                        dfim = c3.date_input(
+                            "Data fim",
+                            value=date.today(),
+                            key=f"empdf_edit_{tipo}_{order_id_atual}",
+                        )
+                        hfim = c4.time_input(
+                            "Hora fim",
+                            key=f"emphf_edit_{tipo}_{order_id_atual}",
+                        )
+
                         if st.form_submit_button("Adicionar funcionário", use_container_width=True):
-                            add_employee_to_order(order_id, emp_map[emp], combine_date_time(di, hi), combine_date_time(dfim, hfim))
+                            add_employee_to_order(
+                                order_id_atual,
+                                emp_map[emp],
+                                combine_date_time(di, hi),
+                                combine_date_time(dfim, hfim),
+                            )
                             st.success("Funcionário vinculado.")
                             st.rerun()
-                order_emp = get_order_employees(order_id)
-                if not order_emp.empty:
-                    order_emp["Tempo"] = order_emp.apply(lambda r: format_duration(r["start_datetime"], r["end_datetime"]), axis=1)
-                    st.dataframe(order_emp.rename(columns={"id":"ID vínculo","funcionario_id":"ID funcionário","nome":"Nome","setor":"Setor","funcao":"Função","start_datetime":"Início","end_datetime":"Fim"}), use_container_width=True, hide_index=True)
-                    
-                    st.markdown("#### Remover funcionário vinculado")
+
+                order_emp = get_order_employees(order_id_atual)
+
+                if order_emp.empty:
+                    st.info("Nenhum funcionário vinculado a esta ordem.")
+                else:
+                    order_emp["Tempo"] = order_emp.apply(
+                        lambda r: format_duration(r["start_datetime"], r["end_datetime"]),
+                        axis=1,
+                    )
+
+                    st.dataframe(
+                        order_emp.rename(
+                            columns={
+                                "id": "ID vínculo",
+                                "funcionario_id": "ID funcionário",
+                                "nome": "Nome",
+                                "setor": "Setor",
+                                "funcao": "Função",
+                                "start_datetime": "Início",
+                                "end_datetime": "Fim",
+                            }
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
                     emp_del_map = {
                         f"ID vínculo {int(r['id'])} - {r['nome']}": int(r["id"])
                         for _, r in order_emp.iterrows()
                     }
+
                     emp_del = st.selectbox(
-                        "Funcionário vinculado",
+                        "Funcionário para remover",
                         list(emp_del_map.keys()),
-                        key=f"del_emp_{tipo}_{order_id}",
+                        key=f"del_emp_edit_{tipo}_{order_id_atual}",
                     )
 
                     if st.button(
                         "Remover funcionário desta ordem",
-                        key=f"btn_del_emp_{tipo}_{order_id}",
+                        key=f"btn_del_emp_edit_{tipo}_{order_id_atual}",
                         use_container_width=True,
                     ):
                         delete_employee_from_order(emp_del_map[emp_del], user["usuario"])
                         st.success("Funcionário removido da ordem.")
                         st.rerun()
-                
-                
+
             with cb:
                 st.markdown("### Peças utilizadas")
-                if not products_df.empty:
-                    with st.form(f"peca_ordem_{tipo}", clear_on_submit=True):
-                        part_map = {f"ID {int(r['id'])} - {r['nome']} | saldo: {r['estoque_atual']} {r['unidade']}": int(r["id"]) for _, r in products_df.iterrows()}
-                        peca = st.selectbox("Peça", list(part_map.keys()), key=f"peca_{tipo}")
-                        quantidade = st.number_input("Quantidade", min_value=0.01, value=1.0, key=f"qtd_{tipo}")
+
+                if products_df.empty:
+                    st.info("Nenhuma peça cadastrada no estoque.")
+                else:
+                    with st.form(f"peca_ordem_edit_{tipo}_{order_id_atual}", clear_on_submit=True):
+                        part_map = {
+                            f"ID {int(r['id'])} - {r['nome']} | saldo: {r['estoque_atual']} {r['unidade']}": int(r["id"])
+                            for _, r in products_df.iterrows()
+                        }
+
+                        peca = st.selectbox(
+                            "Peça",
+                            list(part_map.keys()),
+                            key=f"peca_edit_{tipo}_{order_id_atual}",
+                        )
+
+                        quantidade = st.number_input(
+                            "Quantidade",
+                            min_value=0.01,
+                            value=1.0,
+                            key=f"qtd_edit_{tipo}_{order_id_atual}",
+                        )
+
                         if st.form_submit_button("Adicionar peça e baixar estoque", use_container_width=True):
-                            add_part_to_order(order_id, part_map[peca], quantidade, user["usuario"])
+                            add_part_to_order(
+                                order_id_atual,
+                                part_map[peca],
+                                quantidade,
+                                user["usuario"],
+                            )
                             st.success("Peça lançada na ordem.")
                             st.rerun()
-                order_parts = get_order_parts(order_id)
-                if not order_parts.empty:
-                    st.dataframe(order_parts.rename(columns={"id":"ID vínculo","peca_id":"ID peça","nome":"Peça","quantidade":"Quantidade","unidade":"Unidade"}), use_container_width=True, hide_index=True)
-                                
-                
-                    st.markdown("#### Remover peça lançada")
+
+                order_parts = get_order_parts(order_id_atual)
+
+                if order_parts.empty:
+                    st.info("Nenhuma peça lançada nesta ordem.")
+                else:
+                    st.dataframe(
+                        order_parts.rename(
+                            columns={
+                                "id": "ID vínculo",
+                                "peca_id": "ID peça",
+                                "nome": "Peça",
+                                "quantidade": "Quantidade",
+                                "unidade": "Unidade",
+                            }
+                        ),
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
                     part_del_map = {
                         f"ID vínculo {int(r['id'])} - {r['nome']} | {r['quantidade']} {r['unidade']}": int(r["id"])
                         for _, r in order_parts.iterrows()
                     }
+
                     part_del = st.selectbox(
-                        "Peça lançada",
+                        "Peça para remover",
                         list(part_del_map.keys()),
-                        key=f"del_part_{tipo}_{order_id}",
+                        key=f"del_part_edit_{tipo}_{order_id_atual}",
                     )
 
                     if st.button(
                         "Remover peça e devolver ao estoque",
-                        key=f"btn_del_part_{tipo}_{order_id}",
+                        key=f"btn_del_part_edit_{tipo}_{order_id_atual}",
                         use_container_width=True,
                     ):
                         delete_part_from_order(part_del_map[part_del], user["usuario"])
-                        st.success("Peça removida da ordem e estoque devolvido.")
-                        st.rerun()
-    with tabs[4]:
+                        st.success("Peça removida e estoque devolvido.")
+                        st.rerun()   
+
+    with tabs[2]:
         st.markdown("### Filtros")
         c1, c2, c3, c4 = st.columns(4)
         machine_id = None
@@ -2234,14 +2630,18 @@ def order_page(tipo, titulo):
                 [f"Ordem {int(r['id'])} - {r['maquina']}" for _, r in df.iterrows()],
                 key=f"consulta_select_{tipo}",
             )
-            if st.button("Carregar esta ordem na aba Editar", key=f"carregar_edit_{tipo}", use_container_width=True):
+            if st.button("Visualizar ordem", key=f"visualizar_os_{tipo}", use_container_width=True):
                 order_id = int(ordem_escolhida.split(" - ")[0].replace("Ordem ", ""))
-                st.session_state[state_key] = order_id
-                st.success("Ordem carregada. Agora clique na aba 'Editar ordem'.")
-        else:
-            st.info("Nenhuma ordem encontrada com os filtros.")
 
-    with tabs[5]:
+                row_view = df[df["id"].astype(int) == order_id].iloc[0]
+                funcionarios = get_order_employees(order_id)
+                pecas = get_order_parts(order_id)
+
+                visualizar_ordem_streamlit(row_view, funcionarios, pecas)
+            else:
+                st.info("Nenhuma ordem encontrada com os filtros.")
+
+    with tabs[3]:
         df = get_orders(tipo)
         if df.empty:
             st.info("Nenhuma ordem cadastrada.")
