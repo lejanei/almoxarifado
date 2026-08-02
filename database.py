@@ -3,7 +3,11 @@ from sqlalchemy import create_engine, text
 from utils import agora, formatar_pedido_id, formatar_produto_id, get_config
 
 DEFAULT_DB_URL = "mysql+pymysql://ljsyst02_adm:vinimalu121924@ljsystem.com.br/ljsyst02_almoxarifado?charset=utf8mb4"
-DB_URL = str(get_config("DB_URL", "")) or str(get_config("ALMOXARIFADO_URL", "")) or DEFAULT_DB_URL
+DB_URL = (
+    str(get_config("DB_URL", ""))
+    or str(get_config("ALMOXARIFADO_URL", ""))
+    or DEFAULT_DB_URL
+)
 
 engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=280, future=True)
 
@@ -14,7 +18,9 @@ def set_database_url(db_url):
     if db_url and str(db_url) != str(DB_URL):
         DB_URL = str(db_url)
         engine.dispose()
-        engine = create_engine(DB_URL, pool_pre_ping=True, pool_recycle=280, future=True)
+        engine = create_engine(
+            DB_URL, pool_pre_ping=True, pool_recycle=280, future=True
+        )
 
 
 def garantir_coluna(tabela, coluna, definicao):
@@ -39,6 +45,7 @@ def carregar_df(sql, params=None):
     with engine.begin() as conn:
         return pd.read_sql_query(text(sql), conn, params=params or {})
 
+
 def carregar_produtos_producao():
     return carregar_df("""
     SELECT
@@ -54,24 +61,23 @@ def carregar_produtos_producao():
     """)
 
 
-def inserir_produto_producao(codigo,nome,unidade,peso):
+def inserir_produto_producao(codigo, nome, unidade, peso):
     if not codigo:
-        codigo=nome.upper().replace(" ","_")    
-    executar("""
+        codigo = nome.upper().replace(" ", "_")
+    executar(
+        """
     INSERT INTO producao_produtos
     (codigo,nome,unidade,peso_padrao)
     VALUES
     (:codigo,:nome,:unidade,:peso)
-    """,{
-        "codigo":codigo,
-        "nome":nome,
-        "unidade":unidade,
-        "peso":peso
-    })
+    """,
+        {"codigo": codigo, "nome": nome, "unidade": unidade, "peso": peso},
+    )
 
 
-def atualizar_produto_producao(id_produto,codigo,nome,unidade,peso,ativo):
-    executar("""
+def atualizar_produto_producao(id_produto, codigo, nome, unidade, peso, ativo):
+    executar(
+        """
     UPDATE producao_produtos
     SET
     codigo=:codigo,
@@ -80,24 +86,27 @@ def atualizar_produto_producao(id_produto,codigo,nome,unidade,peso,ativo):
     peso_padrao=:peso,
     ativo=:ativo
     WHERE id=:id
-    """,{
-    "id":id_produto,
-    "codigo":codigo,
-    "nome":nome,
-    "unidade":unidade,
-    "peso":peso,
-    "ativo":ativo
-
-    })
+    """,
+        {
+            "id": id_produto,
+            "codigo": codigo,
+            "nome": nome,
+            "unidade": unidade,
+            "peso": peso,
+            "ativo": ativo,
+        },
+    )
 
 
 def excluir_produto_producao(id_produto):
-    executar("""
+    executar(
+        """
     DELETE FROM producao_produtos
     WHERE id=:id
-    """,{
-    "id":id_produto
-    })
+    """,
+        {"id": id_produto},
+    )
+
 
 def criar_tabelas():
     executar("""CREATE TABLE IF NOT EXISTS producao_produtos(
@@ -112,9 +121,7 @@ def criar_tabelas():
             ON UPDATE CURRENT_TIMESTAMP
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
         """)
-    
-    
-    
+
     executar("""CREATE TABLE IF NOT EXISTS servicos_terceiros (
         id INT AUTO_INCREMENT PRIMARY KEY,
         numero VARCHAR(50),
@@ -155,7 +162,6 @@ def criar_tabelas():
         CONSTRAINT fk_serv_anexos FOREIGN KEY (servico_id) REFERENCES servicos_terceiros(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
-
     executar("""CREATE TABLE IF NOT EXISTS orcamentos_gerais_mensais (
         id INT AUTO_INCREMENT PRIMARY KEY,
         ano INT NOT NULL,
@@ -168,7 +174,6 @@ def criar_tabelas():
         atualizado_em VARCHAR(50),
         UNIQUE KEY uq_orc_geral_mes_tipo (ano, mes, tipo_orcamento)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-
 
     executar("""CREATE TABLE IF NOT EXISTS centros_custo (
         id INT AUTO_INCREMENT PRIMARY KEY,
@@ -287,7 +292,7 @@ def criar_tabelas():
         lida TINYINT DEFAULT 0,
         INDEX idx_notificacao_pedido (pedido_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
-    
+
     executar("""CREATE TABLE IF NOT EXISTS solicitacoes (
         id INT AUTO_INCREMENT PRIMARY KEY,
         numero VARCHAR(50),
@@ -320,13 +325,120 @@ def criar_tabelas():
         CONSTRAINT fk_sol_anexos FOREIGN KEY (solicitacao_id) REFERENCES solicitacoes(id) ON DELETE CASCADE
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
+    #  ============================================================
+    #   -- PMOC - MÁQUINAS DE AR CONDICIONADO
+    # ============================================================
+
+    executar("""CREATE TABLE IF NOT EXISTS pmoc_maquinas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        codigo VARCHAR(30) NOT NULL UNIQUE,
+        marca VARCHAR(100),
+        modelo VARCHAR(100),
+        capacidade INT,
+        unidade_capacidade VARCHAR(10) DEFAULT 'BTU',
+        local VARCHAR(200),
+        status VARCHAR(20) DEFAULT 'ATIVA',
+        observacao TEXT,
+        created_at VARCHAR(50),
+        updated_at VARCHAR(50)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    # ============================================================
+    # #PMOC - PREVENTIVAS
+    # ============================================================
+
+    executar("""CREATE TABLE IF NOT EXISTS pmoc_preventivas (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    numero VARCHAR(30),
+    maquina_id INT NOT NULL,
+    tipo_servico VARCHAR(30) DEFAULT 'HIGIENIZACAO',
+    data_programada DATE,
+    data_execucao DATE,
+    status VARCHAR(20) DEFAULT 'ABERTA',
+    observacao TEXT,
+    created_at VARCHAR(50),
+    updated_at VARCHAR(50),
+    INDEX idx_pmoc_maquina (maquina_id),
+    CONSTRAINT fk_pmoc_maquina
+        FOREIGN KEY (maquina_id)
+        REFERENCES pmoc_maquinas(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    # ============================================================
+    # #-#- EXECUTORES
+    # ============================================================
+
+    executar("""CREATE TABLE IF NOT EXISTS pmoc_preventiva_executores (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    preventiva_id INT NOT NULL,
+    funcionario_id INT NOT NULL,
+    INDEX idx_pmoc_prev_exec (preventiva_id),
+    CONSTRAINT fk_pmoc_prev_exec
+        FOREIGN KEY (preventiva_id)
+        REFERENCES pmoc_preventivas(id)
+        ON DELETE CASCADE,
+    CONSTRAINT fk_pmoc_funcionario
+        FOREIGN KEY (funcionario_id)
+        REFERENCES employees(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    # ============================================================
+    # FOTOS
+    # ============================================================
+
+    executar("""CREATE TABLE IF NOT EXISTS pmoc_preventiva_fotos (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    preventiva_id INT NOT NULL,
+    nome_arquivo VARCHAR(255),
+    caminho VARCHAR(500),
+    enviado_por VARCHAR(100),
+    data_envio VARCHAR(50),
+    INDEX idx_pmoc_fotos (preventiva_id),
+    CONSTRAINT fk_pmoc_fotos
+        FOREIGN KEY (preventiva_id)
+        REFERENCES pmoc_preventivas(id)
+        ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    # ===========================================================
+    # CORRETIVAS PMOC
+    # ============================================================
+
+    executar("""CREATE TABLE IF NOT EXISTS pmoc_corretivas (
+    id INT AUTO_INCREMENT PRIMARY KEY,
+    numero VARCHAR(30),
+    maquina_id INT NOT NULL,
+    service_order_id INT NOT NULL,
+    status VARCHAR(20) DEFAULT 'ABERTA',
+    observacao TEXT,
+    created_at VARCHAR(50),
+    updated_at VARCHAR(50),
+    INDEX idx_pmoc_corretiva_maquina (maquina_id),
+    INDEX idx_pmoc_os (service_order_id),
+    CONSTRAINT fk_pmoc_corretiva_maquina
+        FOREIGN KEY (maquina_id)
+        REFERENCES pmoc_maquinas(id),
+    CONSTRAINT fk_pmoc_service_order
+        FOREIGN KEY (service_order_id)
+        REFERENCES service_orders(id)
+
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
     inserir_usuarios_padrao()
     migrar_banco()
 
 
 def coluna_existe(tabela, coluna):
-    df = carregar_df("""SELECT COUNT(*) AS total FROM information_schema.columns
-        WHERE table_schema = DATABASE() AND table_name = :tabela AND column_name = :coluna""", {"tabela": tabela, "coluna": coluna})
+    df = carregar_df(
+        """SELECT COUNT(*) AS total FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = :tabela AND column_name = :coluna""",
+        {"tabela": tabela, "coluna": coluna},
+    )
     return int(df["total"].iloc[0]) > 0
 
 
@@ -336,18 +448,110 @@ def adicionar_coluna_se_nao_existir(tabela, coluna, tipo):
 
 
 def migrar_banco():
-    for coluna, tipo in [("numero","VARCHAR(50)"),("fornecedor_id","INT NULL"),("status","VARCHAR(50)"),("prioridade","VARCHAR(50) DEFAULT 'Normal'"),("observacao","LONGTEXT"),("criado_por","VARCHAR(100)"),("aprovado_por","VARCHAR(100)"),("data_aprovacao","VARCHAR(50)"),("comprado_por","VARCHAR(100)"),("data_compra","VARCHAR(50)"),("recebido_por","VARCHAR(100)"),("data_recebimento","VARCHAR(50)"),("cancelado_por","VARCHAR(100)"),("data_cancelamento","VARCHAR(50)")]:
+    # =========================================================
+    # ITENS AVULSOS EM PEDIDOS DE COMPRA
+    # =========================================================
+
+    adicionar_coluna_se_nao_existir(
+        "pedido_itens",
+        "tipo_item",
+        "VARCHAR(20) NOT NULL DEFAULT 'ESTOQUE'",
+    )
+
+    adicionar_coluna_se_nao_existir(
+        "pedido_itens",
+        "descricao_avulsa",
+        "VARCHAR(255) NULL",
+    )
+
+    adicionar_coluna_se_nao_existir(
+        "pedido_itens",
+        "unidade_avulsa",
+        "VARCHAR(30) NULL",
+    )
+
+    # Remove temporariamente a chave estrangeira para permitir
+    # produto_id nulo em itens avulsos.
+    try:
+        executar("ALTER TABLE pedido_itens " "DROP FOREIGN KEY fk_itens_produto")
+    except Exception:
+        pass
+
+    try:
+        executar("ALTER TABLE pedido_itens " "MODIFY COLUMN produto_id INT NULL")
+    except Exception:
+        pass
+
+    # Registros antigos continuam como produtos do estoque.
+    executar("""
+        UPDATE pedido_itens
+        SET tipo_item = 'ESTOQUE'
+        WHERE tipo_item IS NULL
+           OR tipo_item = ''
+        """)
+
+    # Recria a chave estrangeira aceitando produto_id nulo.
+    try:
+        executar("""
+            ALTER TABLE pedido_itens
+            ADD CONSTRAINT fk_itens_produto
+            FOREIGN KEY (produto_id)
+            REFERENCES products(id)
+            ON DELETE RESTRICT
+            """)
+    except Exception:
+        pass
+    adicionar_coluna_se_nao_existir(
+        "pedidos",
+        "solicitacao_id",
+        "INT NULL",
+    )
+
+    adicionar_coluna_se_nao_existir(
+        "servicos_terceiros",
+        "solicitacao_id",
+        "INT NULL",
+    )
+
+    for coluna, tipo in [
+        ("numero", "VARCHAR(50)"),
+        ("fornecedor_id", "INT NULL"),
+        ("status", "VARCHAR(50)"),
+        ("prioridade", "VARCHAR(50) DEFAULT 'Normal'"),
+        ("observacao", "LONGTEXT"),
+        ("criado_por", "VARCHAR(100)"),
+        ("aprovado_por", "VARCHAR(100)"),
+        ("data_aprovacao", "VARCHAR(50)"),
+        ("comprado_por", "VARCHAR(100)"),
+        ("data_compra", "VARCHAR(50)"),
+        ("recebido_por", "VARCHAR(100)"),
+        ("data_recebimento", "VARCHAR(50)"),
+        ("cancelado_por", "VARCHAR(100)"),
+        ("data_cancelamento", "VARCHAR(50)"),
+    ]:
         adicionar_coluna_se_nao_existir("pedidos", coluna, tipo)
 
     # Compatibilidade com tabela antiga de produtos de compras.
     adicionar_coluna_se_nao_existir("produtos", "codigo", "VARCHAR(50)")
     adicionar_coluna_se_nao_existir("produtos", "unidade", "VARCHAR(50)")
 
-    for _, row in carregar_df("SELECT id FROM produtos WHERE codigo IS NULL OR codigo = ''").iterrows():
-        executar("UPDATE produtos SET codigo=:codigo WHERE id=:id", {"codigo": formatar_produto_id(row["id"]), "id": int(row["id"])})
-    for _, row in carregar_df("SELECT id FROM pedidos WHERE numero IS NULL OR numero = ''").iterrows():
-        executar("UPDATE pedidos SET numero=:numero WHERE id=:id", {"numero": formatar_pedido_id(row["id"]), "id": int(row["id"])})
-    executar("UPDATE pedidos SET prioridade='Normal' WHERE prioridade IS NULL OR prioridade=''")
+    for _, row in carregar_df(
+        "SELECT id FROM produtos WHERE codigo IS NULL OR codigo = ''"
+    ).iterrows():
+        executar(
+            "UPDATE produtos SET codigo=:codigo WHERE id=:id",
+            {"codigo": formatar_produto_id(row["id"]), "id": int(row["id"])},
+        )
+    for _, row in carregar_df(
+        "SELECT id FROM pedidos WHERE numero IS NULL OR numero = ''"
+    ).iterrows():
+        executar(
+            "UPDATE pedidos SET numero=:numero WHERE id=:id",
+            {"numero": formatar_pedido_id(row["id"]), "id": int(row["id"])},
+        )
+    executar(
+        "UPDATE pedidos SET prioridade='Normal' WHERE prioridade IS NULL OR prioridade=''"
+    )
 
     # Migração para que pedido_itens.produto_id aponte para products.id do estoque.
     # Se houver pedidos antigos incompatíveis, o sistema remove a FK antiga e continua funcionando.
@@ -356,7 +560,9 @@ def migrar_banco():
     except Exception:
         pass
     try:
-        executar("ALTER TABLE pedido_itens ADD CONSTRAINT fk_itens_produto FOREIGN KEY (produto_id) REFERENCES products(id) ON DELETE RESTRICT")
+        executar(
+            "ALTER TABLE pedido_itens ADD CONSTRAINT fk_itens_produto FOREIGN KEY (produto_id) REFERENCES products(id) ON DELETE RESTRICT"
+        )
     except Exception:
         pass
 
@@ -369,15 +575,19 @@ def inserir_usuarios_padrao():
 
 
 def login(usuario, senha):
-    row = buscar_um("SELECT usuario,nome,perfil FROM usuarios WHERE usuario=:u AND senha=:s", {"u": usuario, "s": senha})
+    row = buscar_um(
+        "SELECT usuario,nome,perfil FROM usuarios WHERE usuario=:u AND senha=:s",
+        {"u": usuario, "s": senha},
+    )
     return (row["usuario"], row["nome"], row["perfil"]) if row else None
-
 
     garantir_coluna("products", "centro_custo_id", "INT NULL")
     garantir_coluna("products", "valor_unitario", "DECIMAL(18,4) NOT NULL DEFAULT 0")
     garantir_coluna("pedidos", "centro_custo_id", "INT NULL")
     garantir_coluna("pedidos", "tipo_orcamento", "VARCHAR(20) NOT NULL DEFAULT 'OPEX'")
-    garantir_coluna("orcamentos_mensais", "tipo_orcamento", "VARCHAR(20) NOT NULL DEFAULT 'OPEX'")
+    garantir_coluna(
+        "orcamentos_mensais", "tipo_orcamento", "VARCHAR(20) NOT NULL DEFAULT 'OPEX'"
+    )
     garantir_coluna("service_orders", "centro_custo_id", "INT NULL")
 
 
@@ -400,25 +610,40 @@ def carregar_produtos():
 
 def inserir_produto(nome, unidade):
     # Compras não cadastra produtos separados. Cadastre produtos em Produtos / Estoque.
-    executar("""INSERT INTO products (nome, unidade, estoque_atual, estoque_minimo, criado_em, atualizado_em)
-               VALUES (:nome, :unidade, 0, 0, NOW(), NOW())""", {"nome": nome, "unidade": unidade or "UN"})
+    executar(
+        """INSERT INTO products (nome, unidade, estoque_atual, estoque_minimo, criado_em, atualizado_em)
+               VALUES (:nome, :unidade, 0, 0, NOW(), NOW())""",
+        {"nome": nome, "unidade": unidade or "UN"},
+    )
+
 
 def atualizar_produto(id_produto, nome, unidade):
-    executar("UPDATE products SET nome=:nome, unidade=:unidade, atualizado_em=NOW() WHERE id=:id", {"nome": nome, "unidade": unidade or "UN", "id": id_produto})
+    executar(
+        "UPDATE products SET nome=:nome, unidade=:unidade, atualizado_em=NOW() WHERE id=:id",
+        {"nome": nome, "unidade": unidade or "UN", "id": id_produto},
+    )
+
 
 def excluir_produto(id_produto):
     executar("DELETE FROM products WHERE id=:id", {"id": id_produto})
+
 
 def carregar_fornecedores():
     return carregar_df("SELECT * FROM fornecedores ORDER BY nome")
 
 
 def inserir_fornecedor(nome, contato, telefone):
-    executar("INSERT INTO fornecedores (nome,contato,telefone) VALUES (:nome,:contato,:telefone)", {"nome": nome, "contato": contato, "telefone": telefone})
+    executar(
+        "INSERT INTO fornecedores (nome,contato,telefone) VALUES (:nome,:contato,:telefone)",
+        {"nome": nome, "contato": contato, "telefone": telefone},
+    )
 
 
 def atualizar_fornecedor(id_fornecedor, nome, contato, telefone):
-    executar("UPDATE fornecedores SET nome=:nome, contato=:contato, telefone=:telefone WHERE id=:id", {"nome": nome, "contato": contato, "telefone": telefone, "id": id_fornecedor})
+    executar(
+        "UPDATE fornecedores SET nome=:nome, contato=:contato, telefone=:telefone WHERE id=:id",
+        {"nome": nome, "contato": contato, "telefone": telefone, "id": id_fornecedor},
+    )
 
 
 def excluir_fornecedor(id_fornecedor):
@@ -426,7 +651,8 @@ def excluir_fornecedor(id_fornecedor):
 
 
 def carregar_pedidos():
-    df = carregar_df("""SELECT p.id,p.numero,p.data,f.nome AS fornecedor,p.status,p.prioridade,
+    df = carregar_df(
+        """SELECT p.id,p.numero,p.data,f.nome AS fornecedor,p.status,p.prioridade,
         p.centro_custo_id, cc.nome AS centro_custo,
         COALESCE(SUM(i.quantidade*i.valor_unitario),0) AS valor_total,
         COUNT(i.id) AS quantidade_itens,p.observacao,p.criado_por,p.aprovado_por,p.data_aprovacao,
@@ -436,86 +662,389 @@ def carregar_pedidos():
         LEFT JOIN centros_custo cc ON cc.id=p.centro_custo_id
         LEFT JOIN pedido_itens i ON i.pedido_id=p.id
         GROUP BY p.id,p.numero,p.data,f.nome,p.status,p.prioridade,p.centro_custo_id,cc.nome,p.observacao,p.criado_por,p.aprovado_por,p.data_aprovacao,p.comprado_por,p.data_compra,p.recebido_por,p.data_recebimento,p.cancelado_por,p.data_cancelamento
-        ORDER BY p.id DESC""")
+        ORDER BY p.id DESC"""
+    )
     if not df.empty:
-        df["numero"] = df.apply(lambda r: r["numero"] if r["numero"] else formatar_pedido_id(r["id"]), axis=1)
+        df["numero"] = df.apply(
+            lambda r: r["numero"] if r["numero"] else formatar_pedido_id(r["id"]),
+            axis=1,
+        )
         df["prioridade"] = df["prioridade"].fillna("Normal")
     return df
 
 
 def carregar_itens_pedido(id_pedido):
-    return carregar_df("""SELECT i.id,i.pedido_id,i.produto_id,
-        COALESCE(NULLIF(pr.codigo, ''), CONCAT('P', LPAD(pr.id, 5, '0'))) AS codigo,
-        pr.nome AS produto, COALESCE(pr.unidade, 'UN') AS unidade,
-        i.quantidade,i.valor_unitario,i.quantidade*i.valor_unitario AS valor_total,i.observacao_item
-        FROM pedido_itens i LEFT JOIN products pr ON pr.id=i.produto_id
-        WHERE i.pedido_id=:id ORDER BY i.id""", {"id": id_pedido})
+    return carregar_df(
+        """
+        SELECT
+            i.id,
+            i.pedido_id,
+            i.produto_id,
+            COALESCE(i.tipo_item, 'ESTOQUE') AS tipo_item,
+
+            CASE
+                WHEN COALESCE(i.tipo_item, 'ESTOQUE') = 'AVULSO'
+                    THEN 'AVULSO'
+                ELSE COALESCE(
+                    NULLIF(pr.codigo, ''),
+                    CONCAT('P', LPAD(pr.id, 5, '0'))
+                )
+            END AS codigo,
+
+            CASE
+                WHEN COALESCE(i.tipo_item, 'ESTOQUE') = 'AVULSO'
+                    THEN i.descricao_avulsa
+                ELSE pr.nome
+            END AS produto,
+
+            CASE
+                WHEN COALESCE(i.tipo_item, 'ESTOQUE') = 'AVULSO'
+                    THEN COALESCE(i.unidade_avulsa, 'UN')
+                ELSE COALESCE(pr.unidade, 'UN')
+            END AS unidade,
+
+            i.descricao_avulsa,
+            i.unidade_avulsa,
+            i.quantidade,
+            i.valor_unitario,
+            i.quantidade * i.valor_unitario AS valor_total,
+            i.observacao_item
+
+        FROM pedido_itens i
+
+        LEFT JOIN products pr
+            ON pr.id = i.produto_id
+
+        WHERE i.pedido_id = :id
+
+        ORDER BY i.id
+        """,
+        {"id": int(id_pedido)},
+    )
 
 
 def buscar_pedido(id_pedido):
-    return buscar_um("""
+    return buscar_um(
+        """
         SELECT p.*, f.nome AS fornecedor, cc.nome AS centro_custo
         FROM pedidos p
         LEFT JOIN fornecedores f ON f.id=p.fornecedor_id
         LEFT JOIN centros_custo cc ON cc.id=p.centro_custo_id
         WHERE p.id=:id
-    """, {"id": id_pedido})
+    """,
+        {"id": id_pedido},
+    )
 
 
-def criar_pedido(data_pedido, fornecedor_id, prioridade, itens, observacao, usuario, centro_custo_id=None):
+def criar_pedido(
+    data_pedido,
+    fornecedor_id,
+    prioridade,
+    itens,
+    observacao,
+    usuario,
+    centro_custo_id=None,
+    solicitacao_id=None,
+):
     log = f"[{agora()}] Pedido criado por {usuario}."
     obs_final = f"{observacao}\n\n{log}" if observacao else log
+
     with engine.begin() as conn:
-        res = conn.execute(text("""INSERT INTO pedidos (data,fornecedor_id,centro_custo_id,status,prioridade,observacao,criado_por)
-            VALUES (:data,:fornecedor_id,:centro_custo_id,'Aberto',:prioridade,:observacao,:usuario)"""), {"data": str(data_pedido), "fornecedor_id": fornecedor_id, "centro_custo_id": centro_custo_id, "prioridade": prioridade, "observacao": obs_final, "usuario": usuario})
+        res = conn.execute(
+            text("""
+                INSERT INTO pedidos (
+                    data,
+                    fornecedor_id,
+                    centro_custo_id,
+                    solicitacao_id,
+                    status,
+                    prioridade,
+                    observacao,
+                    criado_por
+                )
+                VALUES (
+                    :data,
+                    :fornecedor_id,
+                    :centro_custo_id,
+                    :solicitacao_id,
+                    'Aberto',
+                    :prioridade,
+                    :observacao,
+                    :usuario
+                )
+                """),
+            {
+                "data": str(data_pedido),
+                "fornecedor_id": fornecedor_id,
+                "centro_custo_id": centro_custo_id,
+                "solicitacao_id": (int(solicitacao_id) if solicitacao_id else None),
+                "prioridade": prioridade,
+                "observacao": obs_final,
+                "usuario": usuario,
+            },
+        )
+
         pedido_id = res.lastrowid
         numero = formatar_pedido_id(pedido_id)
-        conn.execute(text("UPDATE pedidos SET numero=:numero WHERE id=:id"), {"numero": numero, "id": pedido_id})
+
+        conn.execute(
+            text("""
+                UPDATE pedidos
+                SET numero = :numero
+                WHERE id = :id
+                """),
+            {
+                "numero": numero,
+                "id": pedido_id,
+            },
+        )
+
         for item in itens:
-            conn.execute(text("""INSERT INTO pedido_itens (pedido_id,produto_id,quantidade,valor_unitario,observacao_item)
-                VALUES (:pedido_id,:produto_id,:quantidade,:valor_unitario,:obs)"""), {"pedido_id": pedido_id, "produto_id": item["produto_id"], "quantidade": item["quantidade"], "valor_unitario": item["valor_unitario"], "obs": item.get("observacao_item", "")})
+            tipo_item = str(item.get("tipo_item") or "ESTOQUE").upper()
+
+            produto_id = item.get("produto_id")
+
+            if tipo_item == "AVULSO":
+                produto_id = None
+
+            conn.execute(
+                text("""
+                    INSERT INTO pedido_itens
+                    (
+                        pedido_id,
+                        produto_id,
+                        tipo_item,
+                        descricao_avulsa,
+                        unidade_avulsa,
+                        quantidade,
+                        valor_unitario,
+                        observacao_item
+                    )
+                    VALUES
+                    (
+                        :pedido_id,
+                        :produto_id,
+                        :tipo_item,
+                        :descricao_avulsa,
+                        :unidade_avulsa,
+                        :quantidade,
+                        :valor_unitario,
+                        :observacao_item
+                    )
+                    """),
+                {
+                    "pedido_id": int(pedido_id),
+                    "produto_id": (int(produto_id) if produto_id else None),
+                    "tipo_item": tipo_item,
+                    "descricao_avulsa": (
+                        str(
+                            item.get("descricao_avulsa") or item.get("produto") or ""
+                        ).strip()
+                        if tipo_item == "AVULSO"
+                        else None
+                    ),
+                    "unidade_avulsa": (
+                        str(
+                            item.get("unidade_avulsa") or item.get("unidade") or "UN"
+                        ).strip()
+                        if tipo_item == "AVULSO"
+                        else None
+                    ),
+                    "quantidade": float(item["quantidade"]),
+                    "valor_unitario": float(item["valor_unitario"]),
+                    "observacao_item": str(item.get("observacao_item") or "").strip(),
+                },
+            )
+
+        if solicitacao_id:
+            conn.execute(
+                text("""
+                    UPDATE solicitacoes
+                    SET
+                        status = 'CONVERTIDA',
+                        pedido_id = :pedido_id,
+                        atualizado_em = :agora,
+                        observacao = CONCAT(
+                            COALESCE(observacao, ''),
+                            :log
+                        )
+                    WHERE id = :solicitacao_id
+                    """),
+                {
+                    "solicitacao_id": int(solicitacao_id),
+                    "pedido_id": int(pedido_id),
+                    "agora": agora(),
+                    "log": (
+                        f"\n\n[{agora()}] Convertida no pedido "
+                        f"{numero} por {usuario}."
+                    ),
+                },
+            )
+
     return pedido_id, numero
 
 
-def atualizar_pedido(id_pedido, data_pedido, fornecedor_id, prioridade, itens, observacao, usuario):
+def atualizar_pedido(
+    id_pedido, data_pedido, fornecedor_id, prioridade, itens, observacao, usuario
+):
     log = f"[{agora()}] Pedido editado por {usuario}."
     obs_final = f"{observacao}\n\n{log}"
     with engine.begin() as conn:
-        conn.execute(text("""UPDATE pedidos SET data=:data, fornecedor_id=:fornecedor_id, prioridade=:prioridade, observacao=:observacao WHERE id=:id"""), {"data": str(data_pedido), "fornecedor_id": fornecedor_id, "prioridade": prioridade, "observacao": obs_final, "id": id_pedido})
-        conn.execute(text("DELETE FROM pedido_itens WHERE pedido_id=:id"), {"id": id_pedido})
+        conn.execute(
+            text(
+                """UPDATE pedidos SET data=:data, fornecedor_id=:fornecedor_id, prioridade=:prioridade, observacao=:observacao WHERE id=:id"""
+            ),
+            {
+                "data": str(data_pedido),
+                "fornecedor_id": fornecedor_id,
+                "prioridade": prioridade,
+                "observacao": obs_final,
+                "id": id_pedido,
+            },
+        )
+        conn.execute(
+            text("DELETE FROM pedido_itens WHERE pedido_id=:id"), {"id": id_pedido}
+        )
         for item in itens:
-            conn.execute(text("""INSERT INTO pedido_itens (pedido_id,produto_id,quantidade,valor_unitario,observacao_item)
-                VALUES (:pedido_id,:produto_id,:quantidade,:valor_unitario,:obs)"""), {"pedido_id": id_pedido, "produto_id": item["produto_id"], "quantidade": item["quantidade"], "valor_unitario": item["valor_unitario"], "obs": item.get("observacao_item", "")})
+            tipo_item = str(item.get("tipo_item") or "ESTOQUE").upper()
+
+            produto_id = item.get("produto_id")
+
+            if tipo_item == "AVULSO":
+                produto_id = None
+
+            conn.execute(
+                text("""
+                    INSERT INTO pedido_itens
+                    (
+                        pedido_id,
+                        produto_id,
+                        tipo_item,
+                        descricao_avulsa,
+                        unidade_avulsa,
+                        quantidade,
+                        valor_unitario,
+                        observacao_item
+                    )
+                    VALUES
+                    (
+                        :pedido_id,
+                        :produto_id,
+                        :tipo_item,
+                        :descricao_avulsa,
+                        :unidade_avulsa,
+                        :quantidade,
+                        :valor_unitario,
+                        :observacao_item
+                    )
+                    """),
+                {
+                    "pedido_id": int(id_pedido),
+                    "produto_id": (int(produto_id) if produto_id else None),
+                    "tipo_item": tipo_item,
+                    "descricao_avulsa": (
+                        str(
+                            item.get("descricao_avulsa") or item.get("produto") or ""
+                        ).strip()
+                        if tipo_item == "AVULSO"
+                        else None
+                    ),
+                    "unidade_avulsa": (
+                        str(
+                            item.get("unidade_avulsa") or item.get("unidade") or "UN"
+                        ).strip()
+                        if tipo_item == "AVULSO"
+                        else None
+                    ),
+                    "quantidade": float(item["quantidade"]),
+                    "valor_unitario": float(item["valor_unitario"]),
+                    "observacao_item": str(item.get("observacao_item") or "").strip(),
+                },
+            )
 
 
 def alterar_status(id_pedido, novo_status, usuario):
     pedido = buscar_pedido(id_pedido)
     if not pedido:
         return
-    obs = (pedido.get("observacao") or "") + f"\n\n[{agora()}] Status alterado de {pedido.get('status')} para {novo_status} por {usuario}."
-    campos = {"Aprovado": ("aprovado_por", "data_aprovacao"), "Comprado": ("comprado_por", "data_compra"), "Recebido": ("recebido_por", "data_recebimento"), "Cancelado": ("cancelado_por", "data_cancelamento")}
+    obs = (
+        (pedido.get("observacao") or "")
+        + f"\n\n[{agora()}] Status alterado de {pedido.get('status')} para {novo_status} por {usuario}."
+    )
+    campos = {
+        "Aprovado": ("aprovado_por", "data_aprovacao"),
+        "Comprado": ("comprado_por", "data_compra"),
+        "Recebido": ("recebido_por", "data_recebimento"),
+        "Cancelado": ("cancelado_por", "data_cancelamento"),
+    }
     if novo_status in campos:
         usuario_col, data_col = campos[novo_status]
-        executar(f"UPDATE pedidos SET status=:status, observacao=:obs, {usuario_col}=:usuario, {data_col}=:data WHERE id=:id", {"status": novo_status, "obs": obs, "usuario": usuario, "data": agora(), "id": id_pedido})
+        executar(
+            f"UPDATE pedidos SET status=:status, observacao=:obs, {usuario_col}=:usuario, {data_col}=:data WHERE id=:id",
+            {
+                "status": novo_status,
+                "obs": obs,
+                "usuario": usuario,
+                "data": agora(),
+                "id": id_pedido,
+            },
+        )
     else:
-        executar("UPDATE pedidos SET status=:status, observacao=:obs WHERE id=:id", {"status": novo_status, "obs": obs, "id": id_pedido})
+        executar(
+            "UPDATE pedidos SET status=:status, observacao=:obs WHERE id=:id",
+            {"status": novo_status, "obs": obs, "id": id_pedido},
+        )
+    if novo_status == "Recebido":
+        concluir_solicitacao_por_pedido(
+            id_pedido,
+            usuario,
+        )
 
 
-def excluir_pedido(id_pedido):
+def excluir_pedido(id_pedido, usuario):
+    reabrir_solicitacao_por_pedido(
+        pedido_id=id_pedido,
+        usuario=usuario,
+    )
     executar("DELETE FROM pedidos WHERE id=:id", {"id": id_pedido})
 
 
 def inserir_anexo(pedido_id, nome_arquivo, caminho, usuario):
-    executar("INSERT INTO pedido_anexos (pedido_id,nome_arquivo,caminho,enviado_por,data_envio) VALUES (:pedido_id,:nome,:caminho,:usuario,:data)", {"pedido_id": pedido_id, "nome": nome_arquivo, "caminho": caminho, "usuario": usuario, "data": agora()})
+    executar(
+        "INSERT INTO pedido_anexos (pedido_id,nome_arquivo,caminho,enviado_por,data_envio) VALUES (:pedido_id,:nome,:caminho,:usuario,:data)",
+        {
+            "pedido_id": pedido_id,
+            "nome": nome_arquivo,
+            "caminho": caminho,
+            "usuario": usuario,
+            "data": agora(),
+        },
+    )
 
 
 def carregar_anexos_pedido(pedido_id):
-    return carregar_df("SELECT * FROM pedido_anexos WHERE pedido_id=:id ORDER BY id DESC", {"id": pedido_id})
+    return carregar_df(
+        "SELECT * FROM pedido_anexos WHERE pedido_id=:id ORDER BY id DESC",
+        {"id": pedido_id},
+    )
 
 
-def registrar_notificacao(tipo, pedido_id, numero_pedido, mensagem, status_envio, usuario):
-    executar("""INSERT INTO notificacoes (data,tipo,pedido_id,numero_pedido,mensagem,destino,status_envio,usuario,lida)
-        VALUES (:data,:tipo,:pedido_id,:numero,:mensagem,'Email',:status,:usuario,0)""", {"data": agora(), "tipo": tipo, "pedido_id": pedido_id, "numero": numero_pedido, "mensagem": mensagem, "status": status_envio, "usuario": usuario})
+def registrar_notificacao(
+    tipo, pedido_id, numero_pedido, mensagem, status_envio, usuario
+):
+    executar(
+        """INSERT INTO notificacoes (data,tipo,pedido_id,numero_pedido,mensagem,destino,status_envio,usuario,lida)
+        VALUES (:data,:tipo,:pedido_id,:numero,:mensagem,'Email',:status,:usuario,0)""",
+        {
+            "data": agora(),
+            "tipo": tipo,
+            "pedido_id": pedido_id,
+            "numero": numero_pedido,
+            "mensagem": mensagem,
+            "status": status_envio,
+            "usuario": usuario,
+        },
+    )
 
 
 def carregar_notificacoes():
@@ -537,17 +1066,25 @@ def carregar_centros_custo(apenas_ativos=True):
 def criar_centro_custo(nome, descricao="", ativo=True):
     executar(
         "INSERT INTO centros_custo (nome, descricao, ativo, criado_em) VALUES (:nome, :descricao, :ativo, :criado)",
-        {"nome": nome.strip(), "descricao": descricao.strip(), "ativo": 1 if ativo else 0, "criado": agora()},
+        {
+            "nome": nome.strip(),
+            "descricao": descricao.strip(),
+            "ativo": 1 if ativo else 0,
+            "criado": agora(),
+        },
     )
 
 
 def atualizar_centro_custo(cc_id, nome, descricao="", ativo=True):
     executar(
         "UPDATE centros_custo SET nome=:nome, descricao=:descricao, ativo=:ativo WHERE id=:id",
-        {"id": int(cc_id), "nome": nome.strip(), "descricao": descricao.strip(), "ativo": 1 if ativo else 0},
+        {
+            "id": int(cc_id),
+            "nome": nome.strip(),
+            "descricao": descricao.strip(),
+            "ativo": 1 if ativo else 0,
+        },
     )
-
-
 
 
 def centro_custo_possui_vinculos(cc_id):
@@ -574,7 +1111,9 @@ def excluir_centro_custo(cc_id):
     vinculos = centro_custo_possui_vinculos(cc_id)
     if vinculos:
         detalhes = ", ".join([f"{k}: {v}" for k, v in vinculos.items()])
-        raise ValueError(f"Este centro de custo possui vínculos e não pode ser excluído. Vínculos: {detalhes}. Use Inativo para bloquear novos lançamentos.")
+        raise ValueError(
+            f"Este centro de custo possui vínculos e não pode ser excluído. Vínculos: {detalhes}. Use Inativo para bloquear novos lançamentos."
+        )
     executar("DELETE FROM centros_custo WHERE id=:id", {"id": int(cc_id)})
 
 
@@ -584,22 +1123,47 @@ def inativar_centro_custo(cc_id):
 
 def carregar_orcamento_mensal(ano, mes, centro_custo_id=None):
     if centro_custo_id:
-        return buscar_um("SELECT * FROM orcamentos_mensais WHERE ano=:ano AND mes=:mes AND centro_custo_id=:cc LIMIT 1", {"ano": int(ano), "mes": int(mes), "cc": int(centro_custo_id)})
-    return buscar_um("SELECT * FROM orcamentos_mensais WHERE ano=:ano AND mes=:mes AND centro_custo_id IS NULL LIMIT 1", {"ano": int(ano), "mes": int(mes)})
+        return buscar_um(
+            "SELECT * FROM orcamentos_mensais WHERE ano=:ano AND mes=:mes AND centro_custo_id=:cc LIMIT 1",
+            {"ano": int(ano), "mes": int(mes), "cc": int(centro_custo_id)},
+        )
+    return buscar_um(
+        "SELECT * FROM orcamentos_mensais WHERE ano=:ano AND mes=:mes AND centro_custo_id IS NULL LIMIT 1",
+        {"ano": int(ano), "mes": int(mes)},
+    )
 
 
-def salvar_orcamento_mensal(ano, mes, valor_orcado, alerta_percentual=80, centro_custo_id=None):
+def salvar_orcamento_mensal(
+    ano, mes, valor_orcado, alerta_percentual=80, centro_custo_id=None
+):
     existente = carregar_orcamento_mensal(ano, mes, centro_custo_id)
-    params = {"ano": int(ano), "mes": int(mes), "valor": float(valor_orcado), "alerta": float(alerta_percentual), "cc": int(centro_custo_id) if centro_custo_id else None, "agora": agora()}
+    params = {
+        "ano": int(ano),
+        "mes": int(mes),
+        "valor": float(valor_orcado),
+        "alerta": float(alerta_percentual),
+        "cc": int(centro_custo_id) if centro_custo_id else None,
+        "agora": agora(),
+    }
     if existente:
-        executar("UPDATE orcamentos_mensais SET valor_orcado=:valor, alerta_percentual=:alerta, atualizado_em=:agora WHERE id=:id", {**params, "id": int(existente["id"])})
+        executar(
+            "UPDATE orcamentos_mensais SET valor_orcado=:valor, alerta_percentual=:alerta, atualizado_em=:agora WHERE id=:id",
+            {**params, "id": int(existente["id"])},
+        )
     else:
-        executar("INSERT INTO orcamentos_mensais (ano, mes, centro_custo_id, valor_orcado, alerta_percentual, criado_em, atualizado_em) VALUES (:ano, :mes, :cc, :valor, :alerta, :agora, :agora)", params)
+        executar(
+            "INSERT INTO orcamentos_mensais (ano, mes, centro_custo_id, valor_orcado, alerta_percentual, criado_em, atualizado_em) VALUES (:ano, :mes, :cc, :valor, :alerta, :agora, :agora)",
+            params,
+        )
 
 
 def total_compras_mes(ano, mes, centro_custo_id=None):
     inicio = f"{int(ano):04d}-{int(mes):02d}-01"
-    fim = f"{int(ano)+1:04d}-01-01" if int(mes)==12 else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    fim = (
+        f"{int(ano)+1:04d}-01-01"
+        if int(mes) == 12
+        else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    )
     sql = """
         SELECT COALESCE(SUM(pi.quantidade * pi.valor_unitario), 0) AS total
         FROM pedidos p
@@ -622,17 +1186,29 @@ def resumo_orcamento_mes(ano, mes, centro_custo_id=None):
     consumido = total_compras_mes(ano, mes, centro_custo_id)
     saldo = valor_orcado - consumido
     percentual = (consumido / valor_orcado * 100) if valor_orcado > 0 else 0
-    return {"valor_orcado": valor_orcado, "consumido": consumido, "saldo": saldo, "percentual": percentual, "alerta_percentual": alerta_percentual}
+    return {
+        "valor_orcado": valor_orcado,
+        "consumido": consumido,
+        "saldo": saldo,
+        "percentual": percentual,
+        "alerta_percentual": alerta_percentual,
+    }
 
 
 # ===== Overrides CAPEX/OPEX =====
 
-def carregar_orcamento_mensal(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
-    tipo = str(tipo_orcamento or 'OPEX').upper()
+
+def carregar_orcamento_mensal(ano, mes, centro_custo_id=None, tipo_orcamento="OPEX"):
+    tipo = str(tipo_orcamento or "OPEX").upper()
     if centro_custo_id:
         return buscar_um(
             "SELECT * FROM orcamentos_mensais WHERE ano=:ano AND mes=:mes AND centro_custo_id=:cc AND tipo_orcamento=:tipo LIMIT 1",
-            {"ano": int(ano), "mes": int(mes), "cc": int(centro_custo_id), "tipo": tipo},
+            {
+                "ano": int(ano),
+                "mes": int(mes),
+                "cc": int(centro_custo_id),
+                "tipo": tipo,
+            },
         )
     return buscar_um(
         "SELECT * FROM orcamentos_mensais WHERE ano=:ano AND mes=:mes AND centro_custo_id IS NULL AND tipo_orcamento=:tipo LIMIT 1",
@@ -640,8 +1216,15 @@ def carregar_orcamento_mensal(ano, mes, centro_custo_id=None, tipo_orcamento='OP
     )
 
 
-def salvar_orcamento_mensal(ano, mes, valor_orcado, alerta_percentual=80, centro_custo_id=None, tipo_orcamento='OPEX'):
-    tipo = str(tipo_orcamento or 'OPEX').upper()
+def salvar_orcamento_mensal(
+    ano,
+    mes,
+    valor_orcado,
+    alerta_percentual=80,
+    centro_custo_id=None,
+    tipo_orcamento="OPEX",
+):
+    tipo = str(tipo_orcamento or "OPEX").upper()
     existente = carregar_orcamento_mensal(ano, mes, centro_custo_id, tipo)
     params = {
         "ano": int(ano),
@@ -664,9 +1247,13 @@ def salvar_orcamento_mensal(ano, mes, valor_orcado, alerta_percentual=80, centro
         )
 
 
-def total_compras_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
+def total_compras_mes(ano, mes, centro_custo_id=None, tipo_orcamento="OPEX"):
     inicio = f"{int(ano):04d}-{int(mes):02d}-01"
-    fim = f"{int(ano)+1:04d}-01-01" if int(mes) == 12 else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    fim = (
+        f"{int(ano)+1:04d}-01-01"
+        if int(mes) == 12
+        else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    )
     sql = """
         SELECT COALESCE(SUM(pi.quantidade * pi.valor_unitario), 0) AS total
         FROM pedidos p
@@ -675,7 +1262,11 @@ def total_compras_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
           AND p.status NOT IN ('Cancelado')
           AND COALESCE(p.tipo_orcamento, 'OPEX') = :tipo
     """
-    params = {"inicio": inicio, "fim": fim, "tipo": str(tipo_orcamento or 'OPEX').upper()}
+    params = {
+        "inicio": inicio,
+        "fim": fim,
+        "tipo": str(tipo_orcamento or "OPEX").upper(),
+    }
     if centro_custo_id:
         sql += " AND p.centro_custo_id = :cc"
         params["cc"] = int(centro_custo_id)
@@ -683,7 +1274,7 @@ def total_compras_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
     return float(row["total"] or 0) if row else 0.0
 
 
-def resumo_orcamento_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
+def resumo_orcamento_mes(ano, mes, centro_custo_id=None, tipo_orcamento="OPEX"):
     orc = carregar_orcamento_mensal(ano, mes, centro_custo_id, tipo_orcamento)
     valor_orcado = float(orc["valor_orcado"]) if orc else 0.0
     alerta_percentual = float(orc["alerta_percentual"]) if orc else 80.0
@@ -696,7 +1287,7 @@ def resumo_orcamento_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
         "saldo": saldo,
         "percentual": percentual,
         "alerta_percentual": alerta_percentual,
-        "tipo_orcamento": str(tipo_orcamento or 'OPEX').upper(),
+        "tipo_orcamento": str(tipo_orcamento or "OPEX").upper(),
     }
 
 
@@ -722,6 +1313,7 @@ def obter_tipo_orcamento_para_pedido(ano, mes, centro_custo_id=None):
 
 # ===== Orçamento mensal geral OPEX/CAPEX =====
 
+
 def carregar_orcamentos_gerais(ano=None, mes=None, tipo_orcamento=None):
     sql = "SELECT * FROM orcamentos_gerais_mensais WHERE 1=1"
     params = {}
@@ -738,14 +1330,20 @@ def carregar_orcamentos_gerais(ano=None, mes=None, tipo_orcamento=None):
     return carregar_df(sql, params)
 
 
-def carregar_orcamento_geral(ano, mes, tipo_orcamento='OPEX'):
+def carregar_orcamento_geral(ano, mes, tipo_orcamento="OPEX"):
     return buscar_um(
         "SELECT * FROM orcamentos_gerais_mensais WHERE ano=:ano AND mes=:mes AND tipo_orcamento=:tipo LIMIT 1",
-        {"ano": int(ano), "mes": int(mes), "tipo": str(tipo_orcamento or 'OPEX').upper()},
+        {
+            "ano": int(ano),
+            "mes": int(mes),
+            "tipo": str(tipo_orcamento or "OPEX").upper(),
+        },
     )
 
 
-def salvar_orcamento_geral(ano, mes, tipo_orcamento, valor_total, alerta_percentual=80, observacao=""):
+def salvar_orcamento_geral(
+    ano, mes, tipo_orcamento, valor_total, alerta_percentual=80, observacao=""
+):
     tipo = str(tipo_orcamento or "OPEX").upper()
     existente = carregar_orcamento_geral(ano, mes, tipo)
     params = {
@@ -777,23 +1375,29 @@ def salvar_orcamento_geral(ano, mes, tipo_orcamento, valor_total, alerta_percent
 
 
 def excluir_orcamento_geral(orcamento_id):
-    executar("DELETE FROM orcamentos_gerais_mensais WHERE id=:id", {"id": int(orcamento_id)})
+    executar(
+        "DELETE FROM orcamentos_gerais_mensais WHERE id=:id", {"id": int(orcamento_id)}
+    )
 
 
-def total_distribuido_orcamento(ano, mes, tipo_orcamento='OPEX'):
+def total_distribuido_orcamento(ano, mes, tipo_orcamento="OPEX"):
     row = buscar_um(
         """SELECT COALESCE(SUM(valor_orcado), 0) AS total
              FROM orcamentos_mensais
             WHERE ano=:ano
               AND mes=:mes
               AND tipo_orcamento=:tipo""",
-        {"ano": int(ano), "mes": int(mes), "tipo": str(tipo_orcamento or 'OPEX').upper()},
+        {
+            "ano": int(ano),
+            "mes": int(mes),
+            "tipo": str(tipo_orcamento or "OPEX").upper(),
+        },
     )
     return float(row["total"] or 0) if row else 0.0
 
 
-def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento='OPEX'):
-    tipo = str(tipo_orcamento or 'OPEX').upper()
+def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento="OPEX"):
+    tipo = str(tipo_orcamento or "OPEX").upper()
     orc = carregar_orcamento_geral(ano, mes, tipo)
     valor_total = float(orc["valor_total"]) if orc else 0.0
     alerta_percentual = float(orc["alerta_percentual"]) if orc else 80.0
@@ -818,30 +1422,82 @@ def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento='OPEX'):
 
 # ===== Serviços de terceiros =====
 
+
 def formatar_servico_id(servico_id):
     return f"SERV-{int(servico_id):05d}"
 
 
-def criar_servico(data_servico, fornecedor_id, centro_custo_id, descricao, valor_total, prioridade, observacao, usuario):
+def criar_servico(
+    data_servico,
+    fornecedor_id,
+    centro_custo_id,
+    descricao,
+    valor_total,
+    prioridade,
+    observacao,
+    usuario,
+    solicitacao_id=None,
+):
     tipo_orcamento = obter_tipo_orcamento_para_pedido(
-        data_servico.year if hasattr(data_servico, "year") else int(str(data_servico)[:4]),
-        data_servico.month if hasattr(data_servico, "month") else int(str(data_servico)[5:7]),
+        (
+            data_servico.year
+            if hasattr(data_servico, "year")
+            else int(str(data_servico)[:4])
+        ),
+        (
+            data_servico.month
+            if hasattr(data_servico, "month")
+            else int(str(data_servico)[5:7])
+        ),
         centro_custo_id,
     )
+
     log = f"[{agora()}] Serviço criado por {usuario}."
     obs_final = f"{observacao}\n\n{log}" if observacao else log
 
     with engine.begin() as conn:
         res = conn.execute(
-            text("""INSERT INTO servicos_terceiros
-                (data, fornecedor_id, centro_custo_id, tipo_orcamento, descricao, valor_total, status, prioridade, observacao, criado_por, criado_em, atualizado_em)
-                VALUES (:data, :fornecedor_id, :centro_custo_id, :tipo_orcamento, :descricao, :valor_total, 'Aberto', :prioridade, :observacao, :usuario, :criado, :atualizado)"""),
+            text("""
+                INSERT INTO servicos_terceiros
+                (
+                    data,
+                    fornecedor_id,
+                    centro_custo_id,
+                    solicitacao_id,
+                    tipo_orcamento,
+                    descricao,
+                    valor_total,
+                    status,
+                    prioridade,
+                    observacao,
+                    criado_por,
+                    criado_em,
+                    atualizado_em
+                )
+                VALUES
+                (
+                    :data,
+                    :fornecedor_id,
+                    :centro_custo_id,
+                    :solicitacao_id,
+                    :tipo_orcamento,
+                    :descricao,
+                    :valor_total,
+                    'Aberto',
+                    :prioridade,
+                    :observacao,
+                    :usuario,
+                    :criado,
+                    :atualizado
+                )
+                """),
             {
                 "data": str(data_servico),
                 "fornecedor_id": int(fornecedor_id),
                 "centro_custo_id": int(centro_custo_id) if centro_custo_id else None,
+                "solicitacao_id": int(solicitacao_id) if solicitacao_id else None,
                 "tipo_orcamento": tipo_orcamento,
-                "descricao": descricao,
+                "descricao": str(descricao or "").strip(),
                 "valor_total": float(valor_total),
                 "prioridade": prioridade,
                 "observacao": obs_final,
@@ -850,9 +1506,46 @@ def criar_servico(data_servico, fornecedor_id, centro_custo_id, descricao, valor
                 "atualizado": agora(),
             },
         )
+
         servico_id = res.lastrowid
         numero = formatar_servico_id(servico_id)
-        conn.execute(text("UPDATE servicos_terceiros SET numero=:numero WHERE id=:id"), {"numero": numero, "id": servico_id})
+
+        conn.execute(
+            text("""
+                UPDATE servicos_terceiros
+                SET numero=:numero
+                WHERE id=:id
+                """),
+            {
+                "numero": numero,
+                "id": servico_id,
+            },
+        )
+
+        if solicitacao_id:
+            conn.execute(
+                text("""
+                    UPDATE solicitacoes
+                    SET
+                        status='CONVERTIDA',
+                        servico_id=:servico_id,
+                        atualizado_em=:agora,
+                        observacao=CONCAT(
+                            COALESCE(observacao, ''),
+                            :log
+                        )
+                    WHERE id=:solicitacao_id
+                    """),
+                {
+                    "solicitacao_id": int(solicitacao_id),
+                    "servico_id": int(servico_id),
+                    "agora": agora(),
+                    "log": (
+                        f"\n\n[{agora()}] Convertida no serviço "
+                        f"{numero} por {usuario}."
+                    ),
+                },
+            )
 
     return servico_id, numero, tipo_orcamento
 
@@ -871,18 +1564,99 @@ def carregar_servicos():
 
 
 def buscar_servico(servico_id):
-    return buscar_um("""SELECT s.*, f.nome AS fornecedor, cc.nome AS centro_custo
+    return buscar_um(
+        """SELECT s.*, f.nome AS fornecedor, cc.nome AS centro_custo
         FROM servicos_terceiros s
         LEFT JOIN fornecedores f ON f.id=s.fornecedor_id
         LEFT JOIN centros_custo cc ON cc.id=s.centro_custo_id
-        WHERE s.id=:id""", {"id": int(servico_id)})
+        WHERE s.id=:id""",
+        {"id": int(servico_id)},
+    )
+
+
+def atualizar_servico(
+    servico_id,
+    data_servico,
+    fornecedor_id,
+    centro_custo_id,
+    descricao,
+    valor_total,
+    prioridade,
+    observacao,
+    usuario,
+):
+    servico_atual = buscar_servico(servico_id)
+
+    if not servico_atual:
+        raise ValueError("Serviço não encontrado.")
+
+    tipo_orcamento = obter_tipo_orcamento_para_pedido(
+        (
+            data_servico.year
+            if hasattr(data_servico, "year")
+            else int(str(data_servico)[:4])
+        ),
+        (
+            data_servico.month
+            if hasattr(data_servico, "month")
+            else int(str(data_servico)[5:7])
+        ),
+        centro_custo_id,
+    )
+
+    observacao_anterior = str(servico_atual.get("observacao") or "").strip()
+
+    observacao_nova = str(observacao or "").strip()
+
+    log = f"[{agora()}] Dados do serviço atualizados " f"por {usuario}."
+
+    if observacao_nova:
+        observacao_final = f"{observacao_nova}\n\n{log}"
+    elif observacao_anterior:
+        observacao_final = f"{observacao_anterior}\n\n{log}"
+    else:
+        observacao_final = log
+
+    executar(
+        """
+        UPDATE servicos_terceiros
+        SET
+            data = :data,
+            fornecedor_id = :fornecedor_id,
+            centro_custo_id = :centro_custo_id,
+            tipo_orcamento = :tipo_orcamento,
+            descricao = :descricao,
+            valor_total = :valor_total,
+            prioridade = :prioridade,
+            observacao = :observacao,
+            atualizado_em = :atualizado_em
+        WHERE id = :id
+        """,
+        {
+            "id": int(servico_id),
+            "data": str(data_servico),
+            "fornecedor_id": int(fornecedor_id),
+            "centro_custo_id": (int(centro_custo_id) if centro_custo_id else None),
+            "tipo_orcamento": tipo_orcamento,
+            "descricao": str(descricao or "").strip(),
+            "valor_total": float(valor_total or 0),
+            "prioridade": str(prioridade or "Normal"),
+            "observacao": observacao_final,
+            "atualizado_em": agora(),
+        },
+    )
+
+    return tipo_orcamento
 
 
 def alterar_status_servico(servico_id, novo_status, usuario):
     serv = buscar_servico(servico_id)
     if not serv:
         return
-    obs = (serv.get("observacao") or "") + f"\n\n[{agora()}] Status alterado de {serv.get('status')} para {novo_status} por {usuario}."
+    obs = (
+        (serv.get("observacao") or "")
+        + f"\n\n[{agora()}] Status alterado de {serv.get('status')} para {novo_status} por {usuario}."
+    )
     campos = {
         "Aprovado": ("aprovado_por", "data_aprovacao"),
         "Executado": ("executado_por", "data_execucao"),
@@ -893,33 +1667,61 @@ def alterar_status_servico(servico_id, novo_status, usuario):
         usuario_col, data_col = campos[novo_status]
         executar(
             f"UPDATE servicos_terceiros SET status=:status, observacao=:obs, {usuario_col}=:usuario, {data_col}=:data, atualizado_em=:data WHERE id=:id",
-            {"status": novo_status, "obs": obs, "usuario": usuario, "data": agora(), "id": int(servico_id)},
+            {
+                "status": novo_status,
+                "obs": obs,
+                "usuario": usuario,
+                "data": agora(),
+                "id": int(servico_id),
+            },
         )
     else:
         executar(
             "UPDATE servicos_terceiros SET status=:status, observacao=:obs, atualizado_em=:data WHERE id=:id",
             {"status": novo_status, "obs": obs, "data": agora(), "id": int(servico_id)},
         )
+    if novo_status == "Finalizado":
+        concluir_solicitacao_por_servico(
+            servico_id,
+            usuario,
+        )
 
 
-def excluir_servico(servico_id):
+def excluir_servico(servico_id, usuario):
+    reabrir_solicitacao_por_servico(
+        servico_id=servico_id,
+        usuario=usuario,
+    )
     executar("DELETE FROM servicos_terceiros WHERE id=:id", {"id": int(servico_id)})
 
 
 def inserir_anexo_servico(servico_id, nome_arquivo, caminho, usuario):
     executar(
         "INSERT INTO servico_anexos (servico_id,nome_arquivo,caminho,enviado_por,data_envio) VALUES (:servico_id,:nome,:caminho,:usuario,:data)",
-        {"servico_id": int(servico_id), "nome": nome_arquivo, "caminho": caminho, "usuario": usuario, "data": agora()},
+        {
+            "servico_id": int(servico_id),
+            "nome": nome_arquivo,
+            "caminho": caminho,
+            "usuario": usuario,
+            "data": agora(),
+        },
     )
 
 
 def carregar_anexos_servico(servico_id):
-    return carregar_df("SELECT * FROM servico_anexos WHERE servico_id=:id ORDER BY id DESC", {"id": int(servico_id)})
+    return carregar_df(
+        "SELECT * FROM servico_anexos WHERE servico_id=:id ORDER BY id DESC",
+        {"id": int(servico_id)},
+    )
 
 
 def total_servicos_mes(ano, mes, centro_custo_id=None, tipo_orcamento=None):
     inicio = f"{int(ano):04d}-{int(mes):02d}-01"
-    fim = f"{int(ano)+1:04d}-01-01" if int(mes) == 12 else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    fim = (
+        f"{int(ano)+1:04d}-01-01"
+        if int(mes) == 12
+        else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    )
     sql = """
         SELECT COALESCE(SUM(valor_total), 0) AS total
         FROM servicos_terceiros
@@ -939,6 +1741,7 @@ def total_servicos_mes(ano, mes, centro_custo_id=None, tipo_orcamento=None):
 
 # ===== Overrides Serviços x Orçamento =====
 
+
 def total_servicos_mes(ano, mes, centro_custo_id=None, tipo_orcamento=None):
     """Total de serviços que devem consumir orçamento.
 
@@ -948,7 +1751,11 @@ def total_servicos_mes(ano, mes, centro_custo_id=None, tipo_orcamento=None):
     - Cancelado e Aberto não consomem.
     """
     inicio = f"{int(ano):04d}-{int(mes):02d}-01"
-    fim = f"{int(ano)+1:04d}-01-01" if int(mes) == 12 else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    fim = (
+        f"{int(ano)+1:04d}-01-01"
+        if int(mes) == 12
+        else f"{int(ano):04d}-{int(mes)+1:02d}-01"
+    )
     sql = """
         SELECT COALESCE(SUM(valor_total), 0) AS total
         FROM servicos_terceiros
@@ -966,7 +1773,7 @@ def total_servicos_mes(ano, mes, centro_custo_id=None, tipo_orcamento=None):
     return float(row["total"] or 0) if row else 0.0
 
 
-def resumo_orcamento_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
+def resumo_orcamento_mes(ano, mes, centro_custo_id=None, tipo_orcamento="OPEX"):
     """Resumo do orçamento mensal por centro de custo.
 
     Inclui:
@@ -991,16 +1798,16 @@ def resumo_orcamento_mes(ano, mes, centro_custo_id=None, tipo_orcamento='OPEX'):
         "saldo": saldo,
         "percentual": percentual,
         "alerta_percentual": alerta_percentual,
-        "tipo_orcamento": str(tipo_orcamento or 'OPEX').upper(),
+        "tipo_orcamento": str(tipo_orcamento or "OPEX").upper(),
     }
 
 
-def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento='OPEX'):
+def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento="OPEX"):
     """Resumo geral mensal OPEX/CAPEX.
 
     Inclui compras e serviços aprovados.
     """
-    tipo = str(tipo_orcamento or 'OPEX').upper()
+    tipo = str(tipo_orcamento or "OPEX").upper()
     orc = carregar_orcamento_geral(ano, mes, tipo)
     valor_total = float(orc["valor_total"]) if orc else 0.0
     alerta_percentual = float(orc["alerta_percentual"]) if orc else 80.0
@@ -1027,32 +1834,48 @@ def resumo_orcamento_geral_mes(ano, mes, tipo_orcamento='OPEX'):
         "percentual_distribuido": percentual_distribuido,
         "alerta_percentual": alerta_percentual,
     }
-    
+
+
 def formatar_solicitacao_id(solicitacao_id):
     return f"SOL-{int(solicitacao_id):06d}"
 
 
-def criar_solicitacao(tipo, descricao, quantidade, unidade, centro_custo_id, prioridade, observacao, usuario):
+def criar_solicitacao(
+    tipo,
+    descricao,
+    quantidade,
+    unidade,
+    centro_custo_id,
+    prioridade,
+    observacao,
+    usuario,
+):
     with engine.begin() as conn:
-        res = conn.execute(text("""
+        res = conn.execute(
+            text("""
             INSERT INTO solicitacoes
             (tipo, descricao, quantidade, unidade, centro_custo_id, prioridade, status, observacao, solicitado_por, criado_em, atualizado_em)
             VALUES
             (:tipo, :descricao, :quantidade, :unidade, :centro_custo_id, :prioridade, 'ABERTA', :observacao, :usuario, :agora, :agora)
-        """), {
-            "tipo": str(tipo).upper(),
-            "descricao": descricao,
-            "quantidade": float(quantidade or 0),
-            "unidade": unidade,
-            "centro_custo_id": int(centro_custo_id) if centro_custo_id else None,
-            "prioridade": prioridade,
-            "observacao": observacao,
-            "usuario": usuario,
-            "agora": agora(),
-        })
+        """),
+            {
+                "tipo": str(tipo).upper(),
+                "descricao": descricao,
+                "quantidade": float(quantidade or 0),
+                "unidade": unidade,
+                "centro_custo_id": int(centro_custo_id) if centro_custo_id else None,
+                "prioridade": prioridade,
+                "observacao": observacao,
+                "usuario": usuario,
+                "agora": agora(),
+            },
+        )
         solicitacao_id = res.lastrowid
         numero = formatar_solicitacao_id(solicitacao_id)
-        conn.execute(text("UPDATE solicitacoes SET numero=:numero WHERE id=:id"), {"numero": numero, "id": solicitacao_id})
+        conn.execute(
+            text("UPDATE solicitacoes SET numero=:numero WHERE id=:id"),
+            {"numero": numero, "id": solicitacao_id},
+        )
     return solicitacao_id, numero
 
 
@@ -1072,12 +1895,15 @@ def carregar_solicitacoes(tipo=None):
 
 
 def buscar_solicitacao(solicitacao_id):
-    return buscar_um("""
+    return buscar_um(
+        """
         SELECT s.*, cc.nome AS centro_custo
         FROM solicitacoes s
         LEFT JOIN centros_custo cc ON cc.id=s.centro_custo_id
         WHERE s.id=:id
-    """, {"id": int(solicitacao_id)})
+    """,
+        {"id": int(solicitacao_id)},
+    )
 
 
 def alterar_status_solicitacao(solicitacao_id, status):
@@ -1088,18 +1914,21 @@ def alterar_status_solicitacao(solicitacao_id, status):
 
 
 def inserir_anexo_solicitacao(solicitacao_id, nome_arquivo, caminho, usuario):
-    executar("""
+    executar(
+        """
         INSERT INTO solicitacao_anexos
         (solicitacao_id, nome_arquivo, caminho, enviado_por, data_envio)
         VALUES
         (:solicitacao_id, :nome, :caminho, :usuario, :data)
-    """, {
-        "solicitacao_id": int(solicitacao_id),
-        "nome": nome_arquivo,
-        "caminho": caminho,
-        "usuario": usuario,
-        "data": agora(),
-    })
+    """,
+        {
+            "solicitacao_id": int(solicitacao_id),
+            "nome": nome_arquivo,
+            "caminho": caminho,
+            "usuario": usuario,
+            "data": agora(),
+        },
+    )
 
 
 def carregar_anexos_solicitacao(solicitacao_id):
@@ -1107,3 +1936,282 @@ def carregar_anexos_solicitacao(solicitacao_id):
         "SELECT * FROM solicitacao_anexos WHERE solicitacao_id=:id ORDER BY id DESC",
         {"id": int(solicitacao_id)},
     )
+
+
+def carregar_solicitacoes_abertas(tipo):
+    return carregar_df(
+        """
+        SELECT
+            s.id,
+            s.numero,
+            s.tipo,
+            s.descricao,
+            s.quantidade,
+            s.unidade,
+            s.centro_custo_id,
+            cc.nome AS centro_custo,
+            s.prioridade,
+            s.status,
+            s.observacao,
+            s.solicitado_por,
+            s.criado_em
+        FROM solicitacoes s
+        LEFT JOIN centros_custo cc
+            ON cc.id = s.centro_custo_id
+        WHERE UPPER(s.tipo) = :tipo
+          AND UPPER(s.status) IN ('ABERTA', 'EM_ANALISE')
+          AND s.pedido_id IS NULL
+          AND s.servico_id IS NULL
+        ORDER BY s.id DESC
+        """,
+        {"tipo": str(tipo or "").upper()},
+    )
+
+
+def converter_solicitacao_em_pedido(
+    solicitacao_id,
+    pedido_id,
+    usuario,
+):
+    executar(
+        """
+        UPDATE solicitacoes
+        SET
+            status = 'CONVERTIDA',
+            pedido_id = :pedido_id,
+            atualizado_em = :agora,
+            observacao = CONCAT(
+                COALESCE(observacao, ''),
+                :log
+            )
+        WHERE id = :id
+        """,
+        {
+            "id": int(solicitacao_id),
+            "pedido_id": int(pedido_id),
+            "agora": agora(),
+            "log": (
+                f"\n\n[{agora()}] Solicitação convertida em pedido "
+                f"de compra por {usuario}."
+            ),
+        },
+    )
+
+
+def converter_solicitacao_em_servico(
+    solicitacao_id,
+    servico_id,
+    usuario,
+):
+    executar(
+        """
+        UPDATE solicitacoes
+        SET
+            status = 'CONVERTIDA',
+            servico_id = :servico_id,
+            atualizado_em = :agora,
+            observacao = CONCAT(
+                COALESCE(observacao, ''),
+                :log
+            )
+        WHERE id = :id
+        """,
+        {
+            "id": int(solicitacao_id),
+            "servico_id": int(servico_id),
+            "agora": agora(),
+            "log": (
+                f"\n\n[{agora()}] Solicitação convertida em serviço " f"por {usuario}."
+            ),
+        },
+    )
+
+
+def concluir_solicitacao_por_pedido(pedido_id, usuario):
+    executar(
+        """
+        UPDATE solicitacoes
+        SET
+            status = 'CONCLUIDA',
+            atualizado_em = :agora,
+            observacao = CONCAT(
+                COALESCE(observacao, ''),
+                :log
+            )
+        WHERE pedido_id = :pedido_id
+          AND status <> 'CONCLUIDA'
+        """,
+        {
+            "pedido_id": int(pedido_id),
+            "agora": agora(),
+            "log": (
+                f"\n\n[{agora()}] Solicitação concluída após "
+                f"recebimento do pedido por {usuario}."
+            ),
+        },
+    )
+
+
+def concluir_solicitacao_por_servico(servico_id, usuario):
+    executar(
+        """
+        UPDATE solicitacoes
+        SET
+            status = 'CONCLUIDA',
+            atualizado_em = :agora,
+            observacao = CONCAT(
+                COALESCE(observacao, ''),
+                :log
+            )
+        WHERE servico_id = :servico_id
+          AND status <> 'CONCLUIDA'
+        """,
+        {
+            "servico_id": int(servico_id),
+            "agora": agora(),
+            "log": (
+                f"\n\n[{agora()}] Solicitação concluída após "
+                f"finalização do serviço por {usuario}."
+            ),
+        },
+    )
+
+
+def reabrir_solicitacao_por_servico(servico_id, usuario):
+    executar(
+        """
+        UPDATE solicitacoes
+        SET
+            status = 'ABERTA',
+            servico_id = NULL,
+            atualizado_em = :agora,
+            observacao = CONCAT(
+                COALESCE(observacao, ''),
+                :log
+            )
+        WHERE servico_id = :servico_id
+        """,
+        {
+            "servico_id": int(servico_id),
+            "agora": agora(),
+            "log": (
+                f"\n\n[{agora()}] Solicitação reaberta após exclusão "
+                f"do serviço por {usuario}."
+            ),
+        },
+    )
+
+
+def reabrir_solicitacao_por_pedido(pedido_id, usuario):
+    executar(
+        """
+        UPDATE solicitacoes
+        SET
+            status = 'ABERTA',
+            pedido_id = NULL,
+            atualizado_em = :agora,
+            observacao = CONCAT(
+                COALESCE(observacao, ''),
+                :log
+            )
+        WHERE pedido_id = :pedido_id
+        """,
+        {
+            "pedido_id": int(pedido_id),
+            "agora": agora(),
+            "log": (
+                f"\n\n[{agora()}] Solicitação reaberta após exclusão "
+                f"do pedido por {usuario}."
+            ),
+        },
+    )
+
+
+def criar_tabelas_pmoc():
+    executar("""
+    CREATE TABLE IF NOT EXISTS pmoc_maquinas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        codigo VARCHAR(30) NOT NULL UNIQUE,
+        marca VARCHAR(100),
+        modelo VARCHAR(100),
+        capacidade INT,
+        unidade_capacidade VARCHAR(10) DEFAULT 'BTU',
+        local VARCHAR(200),
+        status VARCHAR(20) DEFAULT 'ATIVA',
+        observacao TEXT,
+        created_at VARCHAR(50),
+        updated_at VARCHAR(50)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    executar("""
+    CREATE TABLE IF NOT EXISTS pmoc_preventivas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        numero VARCHAR(30),
+        maquina_id INT NOT NULL,
+        tipo_servico VARCHAR(30) DEFAULT 'HIGIENIZACAO',
+        data_programada DATE,
+        data_execucao DATE,
+        status VARCHAR(20) DEFAULT 'ABERTA',
+        observacao TEXT,
+        created_at VARCHAR(50),
+        updated_at VARCHAR(50),
+        INDEX idx_pmoc_maquina (maquina_id),
+        CONSTRAINT fk_pmoc_maquina
+            FOREIGN KEY (maquina_id)
+            REFERENCES pmoc_maquinas(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    executar("""
+    CREATE TABLE IF NOT EXISTS pmoc_preventiva_executores (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        preventiva_id INT NOT NULL,
+        funcionario_id INT NOT NULL,
+        INDEX idx_pmoc_prev_exec (preventiva_id),
+        CONSTRAINT fk_pmoc_prev_exec
+            FOREIGN KEY (preventiva_id)
+            REFERENCES pmoc_preventivas(id)
+            ON DELETE CASCADE,
+        CONSTRAINT fk_pmoc_funcionario
+            FOREIGN KEY (funcionario_id)
+            REFERENCES employees(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    executar("""
+    CREATE TABLE IF NOT EXISTS pmoc_preventiva_fotos (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        preventiva_id INT NOT NULL,
+        nome_arquivo VARCHAR(255),
+        caminho VARCHAR(500),
+        enviado_por VARCHAR(100),
+        data_envio VARCHAR(50),
+        INDEX idx_pmoc_fotos (preventiva_id),
+        CONSTRAINT fk_pmoc_fotos
+            FOREIGN KEY (preventiva_id)
+            REFERENCES pmoc_preventivas(id)
+            ON DELETE CASCADE
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
+
+    executar("""
+    CREATE TABLE IF NOT EXISTS pmoc_corretivas (
+        id INT AUTO_INCREMENT PRIMARY KEY,
+        numero VARCHAR(30),
+        maquina_id INT NOT NULL,
+        service_order_id INT NOT NULL,
+        status VARCHAR(20) DEFAULT 'ABERTA',
+        observacao TEXT,
+        created_at VARCHAR(50),
+        updated_at VARCHAR(50),
+        INDEX idx_pmoc_corretiva_maquina (maquina_id),
+        INDEX idx_pmoc_os (service_order_id),
+        CONSTRAINT fk_pmoc_corretiva_maquina
+            FOREIGN KEY (maquina_id)
+            REFERENCES pmoc_maquinas(id),
+        CONSTRAINT fk_pmoc_service_order
+            FOREIGN KEY (service_order_id)
+            REFERENCES service_orders(id)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
+    """)
