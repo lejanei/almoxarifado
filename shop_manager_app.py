@@ -9,10 +9,19 @@ import email_sender as email_mod
 from email_sender import *
 import telegram_sender as telegram_mod
 from telegram_sender import *
+import os
+import requests
 
 
 # Mensagens sem link
-def mensagem_pedido_criado(numero, pedido_id, usuario, fornecedor, total, prioridade):
+def mensagem_pedido_criado(
+    numero,
+    pedido_id,
+    usuario,
+    fornecedor,
+    total,
+    prioridade,
+):
     return f"""🛒 NOVO PEDIDO DE COMPRA
 
 Pedido: {numero}
@@ -20,6 +29,8 @@ Fornecedor: {fornecedor}
 Valor: {total}
 Prioridade: {prioridade}
 Criado por: {usuario}
+
+Selecione uma decisão abaixo:
 """
 
 
@@ -185,6 +196,118 @@ def tem_permissao_excluir():
     return st.session_state.perfil in ["admin", "aprovador"]
 
 
+def planta_atual_telegram():
+    planta = (
+        str(
+            st.session_state.get(
+                "planta",
+                "IBRAC",
+            )
+        )
+        .strip()
+        .upper()
+    )
+
+    planta = planta.replace(
+        "-",
+        "_",
+    ).replace(
+        " ",
+        "_",
+    )
+
+    aliases = {
+        "CORI_TL": "CORI_TRES_LAGOAS",
+        "CORI_3_LAGOAS": "CORI_TRES_LAGOAS",
+        "CORI_TRESLAGOAS": "CORI_TRES_LAGOAS",
+    }
+
+    return aliases.get(planta, planta)
+
+
+def enviar_aprovacao_telegram(
+    pedido_id,
+    mensagem,
+):
+    token = str(
+        os.getenv(
+            "TELEGRAM_BOT_TOKEN",
+            "",
+        )
+    ).strip()
+
+    if not token:
+        print("TELEGRAM_BOT_TOKEN não configurado.")
+        return False
+
+    aprovadores = fetch_df("""
+        SELECT
+            nome,
+            usuario,
+            telegram_user_id
+        FROM users
+        WHERE telegram_user_id IS NOT NULL
+          AND telegram_pode_aprovar = 1
+          AND telegram_ativo = 1
+          AND ativo = 1
+        ORDER BY nome
+        """)
+
+    if aprovadores.empty:
+        print("Nenhum aprovador Telegram ativo.")
+        return False
+
+    planta = planta_atual_telegram()
+
+    botoes = {
+        "inline_keyboard": [
+            [
+                {
+                    "text": "✅ Aprovar",
+                    "callback_data": (f"approve:{planta}:{int(pedido_id)}"),
+                },
+                {
+                    "text": "❌ Rejeitar",
+                    "callback_data": (f"reject:{planta}:{int(pedido_id)}"),
+                },
+            ]
+        ]
+    }
+
+    sucesso = True
+
+    for _, aprovador in aprovadores.iterrows():
+        try:
+            resposta = requests.post(
+                (f"https://api.telegram.org/" f"bot{token}/sendMessage"),
+                json={
+                    "chat_id": int(aprovador["telegram_user_id"]),
+                    "text": mensagem,
+                    "reply_markup": botoes,
+                },
+                timeout=20,
+            )
+
+            dados = resposta.json()
+
+            if resposta.status_code != 200 or not dados.get("ok"):
+                print(
+                    "Erro ao enviar aprovação para",
+                    aprovador["usuario"],
+                    dados,
+                )
+                sucesso = False
+
+        except Exception as erro:
+            print(
+                "Erro ao enviar aprovação Telegram:",
+                erro,
+            )
+            sucesso = False
+
+    return sucesso
+
+
 def notificar(
     tipo,
     pedido_id,
@@ -220,9 +343,19 @@ def notificar(
 
     # Telegram envia a mensagem.
     try:
-        ok_msg_telegram = telegram_mod.enviar_telegram(msg)
+        if str(tipo).strip().lower() == "pedido criado":
+            ok_msg_telegram = enviar_aprovacao_telegram(
+                pedido_id=pedido_id,
+                mensagem=msg,
+            )
+        else:
+            ok_msg_telegram = telegram_mod.enviar_telegram(msg)
+
     except Exception as erro_telegram:
-        print("Erro Telegram:", erro_telegram)
+        print(
+            "Erro Telegram:",
+            erro_telegram,
+        )
         ok_msg_telegram = False
 
     ok_anexos_telegram = True

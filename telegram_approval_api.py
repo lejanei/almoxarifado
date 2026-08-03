@@ -116,12 +116,17 @@ def find_approver(conn, telegram_user_id: int):
     return (
         conn.execute(
             text("""
-            SELECT id, usuario_sistema, nome, pode_aprovar, ativo
-            FROM telegram_aprovadores
-            WHERE telegram_user_id = :telegram_user_id
-            LIMIT 1
-            """),
-            {"telegram_user_id": telegram_user_id},
+                SELECT
+                    id,
+                    usuario AS usuario_sistema,
+                    nome,
+                    telegram_pode_aprovar AS pode_aprovar,
+                    telegram_ativo AS ativo
+                FROM users
+                WHERE telegram_user_id = :telegram_user_id
+                LIMIT 1
+                """),
+            {"telegram_user_id": int(telegram_user_id)},
         )
         .mappings()
         .first()

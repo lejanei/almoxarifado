@@ -368,7 +368,7 @@ def init_db():
     ddls = [
         """CREATE TABLE IF NOT EXISTS centros_custo (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL UNIQUE,descricao TEXT,ativo TINYINT(1) NOT NULL DEFAULT 1,criado_em VARCHAR(50)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS orcamentos_mensais (id INT AUTO_INCREMENT PRIMARY KEY,ano INT NOT NULL,mes INT NOT NULL,centro_custo_id INT NULL,valor_orcado DECIMAL(15,2) NOT NULL DEFAULT 0,alerta_percentual DECIMAL(5,2) NOT NULL DEFAULT 80,criado_em VARCHAR(50),atualizado_em VARCHAR(50),UNIQUE KEY uq_orc_mes_cc (ano,mes,centro_custo_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
-        """CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,usuario VARCHAR(80) NOT NULL UNIQUE,email VARCHAR(150),perfil VARCHAR(50),senha_hash VARCHAR(64),ativo TINYINT(1) NOT NULL DEFAULT 1,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS users (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,usuario VARCHAR(80) NOT NULL UNIQUE,email VARCHAR(150),perfil VARCHAR(50),senha_hash VARCHAR(64),telegram_user_id BIGINT NULL,telegram_username VARCHAR(100) NULL,telegram_pode_aprovar TINYINT(1) NOT NULL DEFAULT 0,telegram_ativo TINYINT(1) NOT NULL DEFAULT 0,ativo TINYINT(1) NOT NULL DEFAULT 1,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL,UNIQUE KEY uq_users_telegram_user_id (telegram_user_id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS products (id INT AUTO_INCREMENT PRIMARY KEY,codigo VARCHAR(80) NULL UNIQUE,nome VARCHAR(150) NOT NULL,descricao TEXT,unidade VARCHAR(20) NOT NULL DEFAULT 'UN',estoque_atual DECIMAL(18,3) NOT NULL DEFAULT 0,estoque_minimo DECIMAL(18,3) NOT NULL DEFAULT 0,
             valor_unitario DECIMAL(18,4) NOT NULL DEFAULT 0,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS movements (id INT AUTO_INCREMENT PRIMARY KEY,produto_id INT NOT NULL,tipo VARCHAR(30) NOT NULL,quantidade DECIMAL(18,3) NOT NULL,observacao TEXT,usuario_lancamento VARCHAR(150),criado_em DATETIME NOT NULL,CONSTRAINT fk_movements_product FOREIGN KEY (produto_id) REFERENCES products(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
@@ -547,6 +547,10 @@ def init_db():
             "ALTER TABLE pmoc_maquinas ADD COLUMN periodicidade_dias INT NOT NULL DEFAULT 90",
             "ALTER TABLE pmoc_preventivas ADD COLUMN gerou_proxima TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE pmoc_preventivas ADD COLUMN preventiva_origem_id INT NULL",
+            "ALTER TABLE users ADD COLUMN telegram_user_id BIGINT NULL",
+            "ALTER TABLE users ADD COLUMN telegram_username VARCHAR(100) NULL",
+            "ALTER TABLE users ADD COLUMN telegram_pode_aprovar TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE users ADD COLUMN telegram_ativo TINYINT(1) NOT NULL DEFAULT 0",
         ]:
             try:
                 conn.execute(text(sql))
@@ -598,15 +602,54 @@ def get_user_opened_orders(username):
     )
 
 
-def update_user_record(user_id, nome, usuario_login, email, perfil, ativo):
+def update_user_record(
+    user_id,
+    nome,
+    usuario_login,
+    email,
+    perfil,
+    ativo,
+    telegram_user_id=None,
+    telegram_username="",
+    telegram_pode_aprovar=False,
+    telegram_ativo=False,
+):
+    telegram_user_id_salvar = None
+
+    if str(telegram_user_id or "").strip():
+        try:
+            telegram_user_id_salvar = int(str(telegram_user_id).strip())
+        except ValueError:
+            raise ValueError("O Telegram ID deve conter apenas números.")
+
+    telegram_username = str(telegram_username or "").strip().lstrip("@")
+
     execute(
-        "UPDATE users SET nome=:nome, usuario=:usuario, email=:email, perfil=:perfil, ativo=:ativo, atualizado_em=:atualizado_em WHERE id=:id",
+        """
+        UPDATE users
+        SET
+            nome = :nome,
+            usuario = :usuario,
+            email = :email,
+            perfil = :perfil,
+            telegram_user_id = :telegram_user_id,
+            telegram_username = :telegram_username,
+            telegram_pode_aprovar = :telegram_pode_aprovar,
+            telegram_ativo = :telegram_ativo,
+            ativo = :ativo,
+            atualizado_em = :atualizado_em
+        WHERE id = :id
+        """,
         {
             "id": int(user_id),
             "nome": nome.strip(),
             "usuario": usuario_login.strip(),
             "email": email.strip(),
             "perfil": perfil,
+            "telegram_user_id": telegram_user_id_salvar,
+            "telegram_username": telegram_username,
+            "telegram_pode_aprovar": (1 if telegram_pode_aprovar else 0),
+            "telegram_ativo": (1 if telegram_ativo else 0),
             "ativo": 1 if ativo else 0,
             "atualizado_em": now_br(),
         },
@@ -686,9 +729,23 @@ def select_cost_center_with_current(
 
 
 def get_users():
-    return fetch_df(
-        "SELECT id,nome,usuario,email,perfil,ativo,criado_em,atualizado_em FROM users ORDER BY nome"
-    )
+    return fetch_df("""
+        SELECT
+            id,
+            nome,
+            usuario,
+            email,
+            perfil,
+            telegram_user_id,
+            telegram_username,
+            telegram_pode_aprovar,
+            telegram_ativo,
+            ativo,
+            criado_em,
+            atualizado_em
+        FROM users
+        ORDER BY nome
+        """)
 
 
 def count_users():
@@ -715,15 +772,71 @@ def authenticate_user(usuario, senha):
     }
 
 
-def create_user(nome, usuario, email, perfil, senha, ativo=True):
+def create_user(
+    nome,
+    usuario,
+    email,
+    perfil,
+    senha,
+    ativo=True,
+    telegram_user_id=None,
+    telegram_username="",
+    telegram_pode_aprovar=False,
+    telegram_ativo=False,
+):
+    telegram_user_id_salvar = None
+
+    if str(telegram_user_id or "").strip():
+        try:
+            telegram_user_id_salvar = int(str(telegram_user_id).strip())
+        except ValueError:
+            raise ValueError("O Telegram ID deve conter apenas números.")
+
+    telegram_username = str(telegram_username or "").strip().lstrip("@")
+
     execute(
-        "INSERT INTO users (nome,usuario,email,perfil,senha_hash,ativo,criado_em,atualizado_em) VALUES (:nome,:usuario,:email,:perfil,:senha_hash,:ativo,:criado_em,:atualizado_em)",
+        """
+        INSERT INTO users
+        (
+            nome,
+            usuario,
+            email,
+            perfil,
+            senha_hash,
+            telegram_user_id,
+            telegram_username,
+            telegram_pode_aprovar,
+            telegram_ativo,
+            ativo,
+            criado_em,
+            atualizado_em
+        )
+        VALUES
+        (
+            :nome,
+            :usuario,
+            :email,
+            :perfil,
+            :senha_hash,
+            :telegram_user_id,
+            :telegram_username,
+            :telegram_pode_aprovar,
+            :telegram_ativo,
+            :ativo,
+            :criado_em,
+            :atualizado_em
+        )
+        """,
         {
             "nome": nome.strip(),
             "usuario": usuario.strip(),
             "email": email.strip(),
             "perfil": perfil,
             "senha_hash": hash_password(senha),
+            "telegram_user_id": telegram_user_id_salvar,
+            "telegram_username": telegram_username,
+            "telegram_pode_aprovar": (1 if telegram_pode_aprovar else 0),
+            "telegram_ativo": (1 if telegram_ativo else 0),
             "ativo": 1 if ativo else 0,
             "criado_em": now_br(),
             "atualizado_em": now_br(),
@@ -3507,6 +3620,131 @@ def require_permission(
     if not condition:
         st.warning(message)
         st.stop()
+
+
+def get_telegram_aprovadores():
+    return fetch_df("""
+        SELECT
+            id,
+            usuario_sistema,
+            nome,
+            telegram_user_id,
+            telegram_username,
+            pode_aprovar,
+            ativo,
+            criado_em,
+            atualizado_em
+        FROM telegram_aprovadores
+        ORDER BY nome, usuario_sistema
+        """)
+
+
+def salvar_telegram_aprovador(
+    usuario_sistema,
+    nome,
+    telegram_user_id,
+    telegram_username,
+    pode_aprovar,
+    ativo,
+):
+    usuario_sistema = str(usuario_sistema or "").strip()
+    nome = str(nome or "").strip()
+    telegram_username = str(telegram_username or "").strip().lstrip("@")
+
+    if not usuario_sistema:
+        raise ValueError("Selecione o usuário do sistema.")
+
+    try:
+        telegram_user_id = int(telegram_user_id)
+    except Exception:
+        raise ValueError("Informe um Telegram ID válido.")
+
+    existente = fetch_df(
+        """
+        SELECT id
+        FROM telegram_aprovadores
+        WHERE usuario_sistema = :usuario_sistema
+           OR telegram_user_id = :telegram_user_id
+        LIMIT 1
+        """,
+        {
+            "usuario_sistema": usuario_sistema,
+            "telegram_user_id": telegram_user_id,
+        },
+    )
+
+    if existente.empty:
+        execute(
+            """
+            INSERT INTO telegram_aprovadores
+            (
+                usuario_sistema,
+                nome,
+                telegram_user_id,
+                telegram_username,
+                pode_aprovar,
+                ativo,
+                criado_em,
+                atualizado_em
+            )
+            VALUES
+            (
+                :usuario_sistema,
+                :nome,
+                :telegram_user_id,
+                :telegram_username,
+                :pode_aprovar,
+                :ativo,
+                :criado_em,
+                :atualizado_em
+            )
+            """,
+            {
+                "usuario_sistema": usuario_sistema,
+                "nome": nome,
+                "telegram_user_id": telegram_user_id,
+                "telegram_username": telegram_username,
+                "pode_aprovar": 1 if pode_aprovar else 0,
+                "ativo": 1 if ativo else 0,
+                "criado_em": now_br(),
+                "atualizado_em": now_br(),
+            },
+        )
+    else:
+        execute(
+            """
+            UPDATE telegram_aprovadores
+            SET
+                usuario_sistema = :usuario_sistema,
+                nome = :nome,
+                telegram_user_id = :telegram_user_id,
+                telegram_username = :telegram_username,
+                pode_aprovar = :pode_aprovar,
+                ativo = :ativo,
+                atualizado_em = :atualizado_em
+            WHERE id = :id
+            """,
+            {
+                "id": int(existente.iloc[0]["id"]),
+                "usuario_sistema": usuario_sistema,
+                "nome": nome,
+                "telegram_user_id": telegram_user_id,
+                "telegram_username": telegram_username,
+                "pode_aprovar": 1 if pode_aprovar else 0,
+                "ativo": 1 if ativo else 0,
+                "atualizado_em": now_br(),
+            },
+        )
+
+
+def excluir_telegram_aprovador(aprovador_id):
+    execute(
+        """
+        DELETE FROM telegram_aprovadores
+        WHERE id = :id
+        """,
+        {"id": int(aprovador_id)},
+    )
 
 
 if not st.session_state.logged_in:
@@ -6701,11 +6939,51 @@ elif menu == "Usuários":
             perfil = st.selectbox(
                 "Perfil", ["Administrador", "Almoxarifado", "Operador", "Aprovador"]
             )
+            st.markdown("### Integração com Telegram")
+            c5, c6 = st.columns(2)
+            telegram_user_id = c5.text_input(
+                "Telegram ID",
+                placeholder="Envie /id ao bot e informe o número recebido",
+                help="Identificador numérico retornado pelo comando /id no bot.",
+            )
+            telegram_username = c6.text_input(
+                "Username do Telegram",
+                placeholder="Ex.: ljs_leandro",
+                help="Pode ser informado com ou sem @.",
+            )
+            c7, c8 = st.columns(2)
+            telegram_pode_aprovar = c7.checkbox(
+                "Pode aprovar compras pelo Telegram",
+                value=False,
+            )
+            telegram_ativo = c8.checkbox(
+                "Integração Telegram ativa",
+                value=False,
+            )
             ativo = st.checkbox("Ativo", value=True)
-            if st.form_submit_button("Criar usuário", use_container_width=True):
-                create_user(nome, usuario_login, email, perfil, senha, ativo)
-                st.success("Usuário criado com sucesso.")
-                st.rerun()
+            if st.form_submit_button(
+                "Criar usuário",
+                use_container_width=True,
+            ):
+                try:
+                    create_user(
+                        nome=nome,
+                        usuario=usuario_login,
+                        email=email,
+                        perfil=perfil,
+                        senha=senha,
+                        ativo=ativo,
+                        telegram_user_id=telegram_user_id,
+                        telegram_username=telegram_username,
+                        telegram_pode_aprovar=telegram_pode_aprovar,
+                        telegram_ativo=telegram_ativo,
+                    )
+
+                    st.success("Usuário criado com sucesso.")
+                    st.rerun()
+
+                except Exception as erro:
+                    st.error(str(erro))
     with t2:
         if users_df.empty:
             st.info("Nenhum usuário cadastrado.")
@@ -6735,26 +7013,74 @@ elif menu == "Usuários":
                         else 1
                     ),
                 )
+                st.markdown("### Integração com Telegram")
+                telegram_id_atual = ""
+                if not pd.isna(row.get("telegram_user_id")):
+                    telegram_id_atual = str(int(row.get("telegram_user_id")))
+                telegram_username_atual = (
+                    ""
+                    if pd.isna(row.get("telegram_username"))
+                    else str(row.get("telegram_username"))
+                )
+                c5, c6 = st.columns(2)
+                telegram_user_id = c5.text_input(
+                    "Telegram ID",
+                    value=telegram_id_atual,
+                    help="Envie /id ao bot para consultar o número.",
+                )
+                telegram_username = c6.text_input(
+                    "Username do Telegram",
+                    value=telegram_username_atual,
+                )
+                c7, c8 = st.columns(2)
+                telegram_pode_aprovar = c7.checkbox(
+                    "Pode aprovar compras pelo Telegram",
+                    value=bool(int(row.get("telegram_pode_aprovar") or 0)),
+                )
+                telegram_ativo = c8.checkbox(
+                    "Integração Telegram ativa",
+                    value=bool(int(row.get("telegram_ativo") or 0)),
+                )
                 ativo = st.checkbox("Ativo", value=bool(row["ativo"]))
                 col1, col2 = st.columns(2)
                 with col1:
                     if st.form_submit_button(
-                        "Atualizar usuário", use_container_width=True
+                        "Atualizar usuário",
+                        use_container_width=True,
                     ):
-                        update_user_record(
-                            int(row["id"]), nome, usuario_login, email, perfil, ativo
-                        )
-                        if senha:
-                            update_user_password(int(row["id"]), senha)
-                        log_action(
-                            user["usuario"],
-                            "Atualizou usuário",
-                            "users",
-                            row["id"],
-                            usuario_login,
-                        )
-                        st.success("Usuário atualizado.")
-                        st.rerun()
+                        try:
+                            update_user_record(
+                                user_id=int(row["id"]),
+                                nome=nome,
+                                usuario_login=usuario_login,
+                                email=email,
+                                perfil=perfil,
+                                ativo=ativo,
+                                telegram_user_id=telegram_user_id,
+                                telegram_username=telegram_username,
+                                telegram_pode_aprovar=telegram_pode_aprovar,
+                                telegram_ativo=telegram_ativo,
+                            )
+
+                            if senha:
+                                update_user_password(
+                                    int(row["id"]),
+                                    senha,
+                                )
+
+                            log_action(
+                                user["usuario"],
+                                "Atualizou usuário",
+                                "users",
+                                row["id"],
+                                usuario_login,
+                            )
+
+                            st.success("Usuário atualizado.")
+                            st.rerun()
+
+                        except Exception as erro:
+                            st.error(str(erro))
                 with col2:
                     if st.form_submit_button(
                         "Excluir usuário", use_container_width=True
