@@ -499,6 +499,37 @@ def init_db():
                 ON DELETE CASCADE
         )
         ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS telegram_aprovadores (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            usuario_sistema VARCHAR(100) NOT NULL,
+            nome VARCHAR(150),
+            telegram_user_id BIGINT NOT NULL UNIQUE,
+            telegram_username VARCHAR(100),
+            pode_aprovar TINYINT(1) NOT NULL DEFAULT 1,
+            ativo TINYINT(1) NOT NULL DEFAULT 1,
+            criado_em DATETIME NOT NULL,
+            atualizado_em DATETIME NULL,
+            INDEX idx_telegram_aprovador_usuario (usuario_sistema)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS telegram_aprovacao_eventos (
+            id BIGINT AUTO_INCREMENT PRIMARY KEY,
+            pedido_id INT NOT NULL,
+            acao VARCHAR(30) NOT NULL,
+            telegram_user_id BIGINT NOT NULL,
+            telegram_username VARCHAR(100),
+            telegram_nome VARCHAR(150),
+            chat_id BIGINT,
+            message_id BIGINT,
+            resultado VARCHAR(30) NOT NULL,
+            detalhes VARCHAR(500),
+            criado_em DATETIME NOT NULL,
+            INDEX idx_tg_evento_pedido (pedido_id),
+            INDEX idx_tg_evento_usuario (telegram_user_id),
+            CONSTRAINT fk_tg_evento_pedido
+                FOREIGN KEY (pedido_id)
+                REFERENCES pedidos(id)
+                ON DELETE CASCADE
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
     ]
     with get_engine().begin() as conn:
         for ddl in ddls:

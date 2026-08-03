@@ -8,3 +8,5 @@ python-dotenv
 SQLAlchemy
 PyMySQL
 cryptography
+fastapi
+uvicorn
