@@ -189,7 +189,12 @@ def edit_decision_message(
 
 
 @app.get("/health")
-def health() -> dict[str, str]:
+def health():
+    return {"status": "ok"}
+
+
+@app.get("/telegram/health")
+def telegram_health():
     return {"status": "ok"}
 
 
