@@ -3093,13 +3093,25 @@ def get_top_employees_called(limit: int = 10) -> pd.DataFrame:
     )
 
 
-def delete_order_cascade(order_id: int, usuario_lancamento: str):
+def delete_order_cascade(
+    order_id: int,
+    usuario_lancamento: str,
+):
+    order_id = int(order_id)
+
     with get_engine().begin() as conn:
+        # =====================================================
+        # 1. LOCALIZAR E DEVOLVER AS PEÇAS AO ESTOQUE
+        # =====================================================
         parts = (
             conn.execute(
-                text(
-                    "SELECT product_id, quantidade FROM service_order_parts WHERE order_id = :order_id"
-                ),
+                text("""
+                    SELECT
+                        product_id,
+                        quantidade
+                    FROM service_order_parts
+                    WHERE order_id = :order_id
+                    """),
                 {"order_id": order_id},
             )
             .mappings()
@@ -3109,11 +3121,17 @@ def delete_order_cascade(order_id: int, usuario_lancamento: str):
         for part in parts:
             product_id = int(part["product_id"])
             quantidade = float(part["quantidade"])
+
             produto = (
                 conn.execute(
-                    text(
-                        "SELECT id, estoque_atual FROM products WHERE id = :id FOR UPDATE"
-                    ),
+                    text("""
+                        SELECT
+                            id,
+                            estoque_atual
+                        FROM products
+                        WHERE id = :id
+                        FOR UPDATE
+                        """),
                     {"id": product_id},
                 )
                 .mappings()
@@ -3122,44 +3140,101 @@ def delete_order_cascade(order_id: int, usuario_lancamento: str):
 
             if produto:
                 novo_estoque = float(produto["estoque_atual"]) + quantidade
+
                 conn.execute(
-                    text(
-                        "UPDATE products SET estoque_atual = :estoque, atualizado_em = :agora WHERE id = :id"
-                    ),
-                    {"estoque": novo_estoque, "agora": now_br(), "id": product_id},
+                    text("""
+                        UPDATE products
+                        SET
+                            estoque_atual = :estoque,
+                            atualizado_em = :agora
+                        WHERE id = :id
+                        """),
+                    {
+                        "estoque": novo_estoque,
+                        "agora": now_br(),
+                        "id": product_id,
+                    },
                 )
+
                 conn.execute(
-                    text(
-                        """INSERT INTO movements (produto_id, tipo, quantidade, observacao, usuario_lancamento, criado_em)
-                               VALUES (:produto_id, 'ENTRADA', :quantidade, :observacao, :usuario_lancamento, :criado_em)"""
-                    ),
+                    text("""
+                        INSERT INTO movements
+                        (
+                            produto_id,
+                            tipo,
+                            quantidade,
+                            observacao,
+                            usuario_lancamento,
+                            criado_em
+                        )
+                        VALUES
+                        (
+                            :produto_id,
+                            'ENTRADA',
+                            :quantidade,
+                            :observacao,
+                            :usuario_lancamento,
+                            :criado_em
+                        )
+                        """),
                     {
                         "produto_id": product_id,
                         "quantidade": quantidade,
-                        "observacao": f"Devolução de peça por exclusão da ordem {order_id}",
+                        "observacao": (
+                            "Devolução de peça por exclusão " f"da ordem {order_id}"
+                        ),
                         "usuario_lancamento": usuario_lancamento,
                         "criado_em": now_br(),
                     },
                 )
 
+        # =====================================================
+        # 2. EXCLUIR REGISTROS FILHOS DA OS
+        # =====================================================
         conn.execute(
-            text("DELETE FROM service_order_parts WHERE order_id = :order_id"),
+            text("""
+                DELETE FROM service_order_parts
+                WHERE order_id = :order_id
+                """),
             {"order_id": order_id},
         )
+
         conn.execute(
-            text("DELETE FROM service_order_employees WHERE order_id = :order_id"),
+            text("""
+                DELETE FROM service_order_employees
+                WHERE order_id = :order_id
+                """),
             {"order_id": order_id},
         )
+
+        # =====================================================
+        # 3. EXCLUIR O VÍNCULO PMOC ANTES DA OS
+        # =====================================================
         conn.execute(
-            text("DELETE FROM service_orders WHERE id = :order_id"),
+            text("""
+                DELETE FROM pmoc_corretivas
+                WHERE service_order_id = :order_id
+                """),
             {"order_id": order_id},
         )
+
+        # =====================================================
+        # 4. EXCLUIR A ORDEM
+        # =====================================================
+        conn.execute(
+            text("""
+                DELETE FROM service_orders
+                WHERE id = :order_id
+                """),
+            {"order_id": order_id},
+        )
+
     log_action(
         usuario_lancamento,
         "Excluiu ordem",
         "service_orders",
         order_id,
-        "Exclusão em cascata com devolução de peças",
+        ("Exclusão em cascata com devolução de peças " "e remoção do vínculo PMOC"),
     )
 
 
@@ -6314,7 +6389,15 @@ def order_page(tipo, titulo):
                     f"ID {int(r['id'])} - {r['nome']}": int(r["id"])
                     for _, r in machines_df.iterrows()
                 }
-                maquina = st.selectbox("Máquina", list(maq_map.keys()))
+
+                opcoes_maquina = ["Selecione a máquina"] + list(maq_map.keys())
+
+                maquina = st.selectbox(
+                    "Máquina",
+                    opcoes_maquina,
+                    index=0,
+                    key=f"nova_ordem_maquina_{tipo}",
+                )
 
                 tipo_manutencao = st.selectbox(
                     "Tipo da manutenção",
@@ -6338,7 +6421,7 @@ def order_page(tipo, titulo):
                 problem_description = st.text_area("Descrição do problema")
                 gera_parada = st.checkbox(
                     "Gerou parada de máquina?",
-                    value=True,
+                    value=False,
                     help="Marque Sim quando a máquina ficou parada por causa desta OS.",
                 )
                 centro_custo_id = select_cost_center(
@@ -6350,13 +6433,30 @@ def order_page(tipo, titulo):
                     key=f"st_{tipo}",
                 )
                 solution_description = st.text_area("Descrição da solução")
-                if st.form_submit_button("Salvar ordem", use_container_width=True):
+                if st.form_submit_button(
+                    "Salvar ordem",
+                    use_container_width=True,
+                ):
+                    if not vincular_pmoc and maquina == "Selecione a máquina":
+                        st.error("Selecione uma máquina antes de criar a ordem.")
+                        st.stop()
+
                     if vincular_pmoc and pmoc_maquina_id is None:
                         st.error("Selecione uma máquina de ar-condicionado.")
                         st.stop()
-                    start_dt = combine_date_time(data_inicio, hora_inicio)
-                    end_dt = combine_date_time(data_fim, hora_fim)
-                    machine_id_salvar = maq_map[maquina]
+
+                    start_dt = combine_date_time(
+                        data_inicio,
+                        hora_inicio,
+                    )
+
+                    end_dt = combine_date_time(
+                        data_fim,
+                        hora_fim,
+                    )
+
+                    machine_id_salvar = None
+
                     if vincular_pmoc:
                         maquina_pmoc_generica = machines_df[
                             machines_df["nome"].astype(str).str.strip().str.upper()
@@ -6373,12 +6473,15 @@ def order_page(tipo, titulo):
 
                         machine_id_salvar = int(maquina_pmoc_generica.iloc[0]["id"])
 
+                    else:
+                        machine_id_salvar = maq_map[maquina]
+
                     order_id = create_order(
                         tipo=tipo,
                         opened_by=user["usuario"],
                         machine_id=machine_id_salvar,
-                        start_dt=combine_date_time(data_inicio, hora_inicio),
-                        end_dt=combine_date_time(data_fim, hora_fim),
+                        start_dt=start_dt,
+                        end_dt=end_dt,
                         problem_description=problem_description,
                         status=status,
                         solution_description=solution_description,
