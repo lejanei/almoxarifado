@@ -1,4 +1,7 @@
 import os, io, base64, hashlib, html, unicodedata
+from dotenv import load_dotenv
+
+load_dotenv()
 from datetime import datetime, date, timedelta
 from zoneinfo import ZoneInfo
 from pathlib import Path

@@ -1,4 +1,7 @@
 import os
+from dotenv import load_dotenv
+
+load_dotenv()
 from datetime import datetime
 from typing import Any
 
@@ -79,7 +82,10 @@ def get_engine_for_plant(planta: str):
     )
 
 
-BOT_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
+BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+
+if not BOT_TOKEN:
+    raise RuntimeError("TELEGRAM_BOT_TOKEN não encontrado no .env")
 WEBHOOK_SECRET = os.environ["TELEGRAM_WEBHOOK_SECRET"]
 REJECT_STATUS = os.getenv("TELEGRAM_REJECT_STATUS", "Cancelado")
 
@@ -113,13 +119,19 @@ def answer_callback(callback_query_id: str, message: str, alert: bool = False) -
 
 
 def find_approver(conn, telegram_user_id: int):
-    return (
+    print(
+        "Telegram ID recebido no callback:",
+        telegram_user_id,
+    )
+
+    approver = (
         conn.execute(
             text("""
                 SELECT
                     id,
                     usuario AS usuario_sistema,
                     nome,
+                    telegram_user_id,
                     telegram_pode_aprovar AS pode_aprovar,
                     telegram_ativo AS ativo
                 FROM users
@@ -131,6 +143,13 @@ def find_approver(conn, telegram_user_id: int):
         .mappings()
         .first()
     )
+
+    print(
+        "Aprovador encontrado:",
+        dict(approver) if approver else None,
+    )
+
+    return approver
 
 
 def register_event(
@@ -264,21 +283,23 @@ async def telegram_webhook(
     engine = get_engine_for_plant(planta)
     with engine.begin() as conn:
         approver = find_approver(conn, telegram_user_id)
-        if not approver or not approver["ativo"] or not approver["pode_aprovar"]:
-            register_event(
-                conn,
-                pedido_id,
-                action,
-                telegram_user_id,
-                username,
-                first_name,
-                chat_id,
-                message_id,
-                "NEGADO",
-                "Telegram ID sem permissão de aprovação",
-            )
+        print(
+            "Validação de permissão:",
+            {
+                "encontrado": bool(approver),
+                "pode_aprovar": (approver.get("pode_aprovar") if approver else None),
+                "ativo": (approver.get("ativo") if approver else None),
+            },
+        )
+        if (
+            not approver
+            or int(approver.get("pode_aprovar") or 0) != 1
+            or int(approver.get("ativo") or 0) != 1
+        ):
             answer_callback(
-                callback_id, "Você não possui permissão para aprovar.", alert=True
+                callback_id,
+                "Você não possui permissão para aprovar.",
+                alert=True,
             )
             return {"ok": True}
 

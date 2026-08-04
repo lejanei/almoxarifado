@@ -240,7 +240,7 @@ def enviar_aprovacao_telegram(
         print("TELEGRAM_BOT_TOKEN não configurado.")
         return False
 
-    aprovadores = fetch_df("""
+    aprovadores = carregar_df("""
         SELECT
             nome,
             usuario,
@@ -1074,7 +1074,7 @@ def tela_novo_pedido():
             if st.button(
                 "Limpar todos os itens",
                 use_container_width=True,
-                key="btn_limpar_itens_novo_pedido",
+                key="btn_limpar_itens_novo_pedido_compras",
             ):
                 st.session_state.itens_novo_pedido = []
                 st.rerun()
@@ -1089,13 +1089,13 @@ def tela_novo_pedido():
                 selecionado = st.selectbox(
                     "Item para remover",
                     itens,
-                    key="item_remover_novo_pedido",
+                    key="item_remover_novo_pedido_compras",
                 )
 
                 if st.button(
                     "Remover item",
                     use_container_width=True,
-                    key="btn_remover_item_novo_pedido",
+                    key="btn_remover_item_novo_pedido_compras",
                 ):
                     indice = itens.index(selecionado)
                     st.session_state.itens_novo_pedido.pop(indice)
