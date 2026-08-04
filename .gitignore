@@ -1,0 +1,25 @@
+# Python
+__pycache__/
+*.pyc
+
+# Ambientes virtuais
+venv/
+.venv/
+
+# Variáveis locais
+.env
+
+# Logs
+*.log
+
+# Arquivos gerados
+shop_data/pdfs/
+shop_data/qrcodes/
+
+# Backups
+*.bak
+*.bak_*
+
+# Sistema operacional
+.DS_Store
+Thumbs.db
