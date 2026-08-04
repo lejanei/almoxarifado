@@ -4,10 +4,20 @@ from utils import get_config
 
 TELEGRAM_BOT_TOKEN = str(get_config("TELEGRAM_BOT_TOKEN", ""))
 TELEGRAM_CHAT_ID = str(get_config("TELEGRAM_CHAT_ID", ""))
-TELEGRAM_CHAT_ID_MANUTENCAO = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO", TELEGRAM_CHAT_ID))
-TELEGRAM_CHAT_ID_MANUTENCAO_IBRAC = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO_IBRAC", TELEGRAM_CHAT_ID_MANUTENCAO))
-TELEGRAM_CHAT_ID_MANUTENCAO_CORI = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO_CORI", TELEGRAM_CHAT_ID_MANUTENCAO))
-TELEGRAM_CHAT_ID_MANUTENCAO_CORI_TRES_LAGOAS = str(get_config("TELEGRAM_CHAT_ID_MANUTENCAO_CORI_TRES_LAGOAS", TELEGRAM_CHAT_ID_MANUTENCAO))
+TELEGRAM_CHAT_ID_MANUTENCAO = str(
+    get_config("TELEGRAM_CHAT_ID_MANUTENCAO", TELEGRAM_CHAT_ID)
+)
+TELEGRAM_CHAT_ID_MANUTENCAO_IBRAC = str(
+    get_config("TELEGRAM_CHAT_ID_MANUTENCAO_IBRAC", TELEGRAM_CHAT_ID_MANUTENCAO)
+)
+TELEGRAM_CHAT_ID_MANUTENCAO_CORI = str(
+    get_config("TELEGRAM_CHAT_ID_MANUTENCAO_CORI", TELEGRAM_CHAT_ID_MANUTENCAO)
+)
+TELEGRAM_CHAT_ID_MANUTENCAO_CORI_TRES_LAGOAS = str(
+    get_config(
+        "TELEGRAM_CHAT_ID_MANUTENCAO_CORI_TRES_LAGOAS", TELEGRAM_CHAT_ID_MANUTENCAO
+    )
+)
 TELEGRAM_ATIVO = str(get_config("TELEGRAM_ATIVO", "SIM")).upper() == "SIM"
 
 
@@ -41,7 +51,11 @@ def enviar_telegram(mensagem: str, chat_id: str | None = None):
         return False
 
 
-def enviar_telegram_documento(caminho_arquivo: str, legenda: str = ""):
+def enviar_telegram_documento(
+    caminho_arquivo: str,
+    legenda: str = "",
+    chat_id: str | None = None,
+):
     """Envia documento/anexo para o grupo do Telegram."""
     if not telegram_configurado():
         print("Telegram não configurado")
@@ -61,7 +75,7 @@ def enviar_telegram_documento(caminho_arquivo: str, legenda: str = ""):
         with open(caminho_arquivo, "rb") as arquivo:
             files = {"document": arquivo}
             data = {
-                "chat_id": TELEGRAM_CHAT_ID,
+                "chat_id": chat_id or TELEGRAM_CHAT_ID,
                 "caption": legenda or "Arquivo anexado",
                 "parse_mode": "HTML",
             }
@@ -77,12 +91,24 @@ def enviar_telegram_documento(caminho_arquivo: str, legenda: str = ""):
         return False
 
 
-def enviar_telegram_com_anexo(mensagem: str, caminho_arquivo: str | None = None, legenda: str = ""):
+def enviar_telegram_com_anexo(
+    mensagem: str,
+    caminho_arquivo: str | None = None,
+    legenda: str = "",
+    chat_id: str | None = None,
+):
     """Envia a mensagem e, se houver arquivo, envia o documento em seguida."""
-    ok_msg = enviar_telegram(mensagem)
+    ok_msg = enviar_telegram(
+        mensagem,
+        chat_id=chat_id,
+    )
     ok_doc = True
 
     if caminho_arquivo:
-        ok_doc = enviar_telegram_documento(caminho_arquivo, legenda or "📎 Orçamento / anexo do pedido")
+        ok_doc = enviar_telegram_documento(
+            caminho_arquivo,
+            legenda or "📎 Orçamento / anexo do pedido",
+            chat_id=chat_id,
+        )
 
     return ok_msg and ok_doc

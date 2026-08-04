@@ -22,7 +22,7 @@ def mensagem_pedido_criado(
     total,
     prioridade,
 ):
-    return f"""🛒 NOVO PEDIDO DE COMPRA
+    return f"""🟡 PEDIDO AGUARDANDO APROVAÇÃO
 
 Pedido: {numero}
 Fornecedor: {fornecedor}
@@ -225,13 +225,12 @@ def planta_atual_telegram():
     return aliases.get(planta, planta)
 
 
-def enviar_aprovacao_telegram(
-    pedido_id,
-    mensagem,
-):
-    token = str(
+def enviar_aprovacao_telegram(pedido_id, mensagem):
+    token = str(os.getenv("TELEGRAM_BOT_TOKEN", "")).strip()
+
+    chat_id = str(
         os.getenv(
-            "TELEGRAM_BOT_TOKEN",
+            "TELEGRAM_CHAT_ID_PEDIDOS_COMPRAS",
             "",
         )
     ).strip()
@@ -240,21 +239,8 @@ def enviar_aprovacao_telegram(
         print("TELEGRAM_BOT_TOKEN não configurado.")
         return False
 
-    aprovadores = carregar_df("""
-        SELECT
-            nome,
-            usuario,
-            telegram_user_id
-        FROM users
-        WHERE telegram_user_id IS NOT NULL
-          AND telegram_pode_aprovar = 1
-          AND telegram_ativo = 1
-          AND ativo = 1
-        ORDER BY nome
-        """)
-
-    if aprovadores.empty:
-        print("Nenhum aprovador Telegram ativo.")
+    if not chat_id:
+        print("TELEGRAM_CHAT_ID_PEDIDOS_COMPRAS " "não configurado.")
         return False
 
     planta = planta_atual_telegram()
@@ -274,38 +260,38 @@ def enviar_aprovacao_telegram(
         ]
     }
 
-    sucesso = True
+    try:
+        resposta = requests.post(
+            (f"https://api.telegram.org/" f"bot{token}/sendMessage"),
+            json={
+                "chat_id": chat_id,
+                "text": mensagem,
+                "reply_markup": botoes,
+            },
+            timeout=20,
+        )
 
-    for _, aprovador in aprovadores.iterrows():
-        try:
-            resposta = requests.post(
-                (f"https://api.telegram.org/" f"bot{token}/sendMessage"),
-                json={
-                    "chat_id": int(aprovador["telegram_user_id"]),
-                    "text": mensagem,
-                    "reply_markup": botoes,
-                },
-                timeout=20,
-            )
+        dados = resposta.json()
 
-            dados = resposta.json()
-
-            if resposta.status_code != 200 or not dados.get("ok"):
-                print(
-                    "Erro ao enviar aprovação para",
-                    aprovador["usuario"],
-                    dados,
-                )
-                sucesso = False
-
-        except Exception as erro:
+        if resposta.status_code == 200 and dados.get("ok"):
             print(
-                "Erro ao enviar aprovação Telegram:",
-                erro,
+                "Pedido enviado ao grupo de aprovação:",
+                pedido_id,
             )
-            sucesso = False
+            return True
 
-    return sucesso
+        print(
+            "Erro ao enviar aprovação Telegram:",
+            dados,
+        )
+        return False
+
+    except Exception as erro:
+        print(
+            "Erro ao enviar aprovação Telegram:",
+            erro,
+        )
+        return False
 
 
 def notificar(
@@ -342,6 +328,18 @@ def notificar(
         ok_email = None
 
     # Telegram envia a mensagem.
+    chat_id_telegram = None
+
+    if str(tipo).strip().lower() == "pedido criado":
+        chat_id_telegram = str(
+            os.getenv(
+                "TELEGRAM_CHAT_ID_PEDIDOS_COMPRAS",
+                "",
+            )
+        ).strip()
+
+        if not chat_id_telegram:
+            raise ValueError("TELEGRAM_CHAT_ID_PEDIDOS_COMPRAS não configurado.")
     try:
         if str(tipo).strip().lower() == "pedido criado":
             ok_msg_telegram = enviar_aprovacao_telegram(
@@ -358,6 +356,14 @@ def notificar(
         )
         ok_msg_telegram = False
 
+    chat_id_anexos = None
+    if str(tipo).strip().lower() == "pedido criado":
+        chat_id_anexos = str(
+            os.getenv(
+                "TELEGRAM_CHAT_ID_PEDIDOS_COMPRAS",
+                "",
+            )
+        ).strip()
     ok_anexos_telegram = True
     anexos = carregar_anexos_pedido(pedido_id) if enviar_anexos_telegram else None
 
@@ -368,7 +374,9 @@ def notificar(
             )
             try:
                 ok_doc = telegram_mod.enviar_telegram_documento(
-                    anexo.caminho, legenda_anexo
+                    anexo.caminho,
+                    legenda_anexo,
+                    chat_id=chat_id_anexos,
                 )
             except Exception as erro_doc:
                 print("Erro Telegram documento:", erro_doc)

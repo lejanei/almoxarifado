@@ -200,12 +200,29 @@ def edit_decision_message(
     original_text: str,
     decision_text: str,
 ) -> None:
+
+    texto = original_text
+
+    if "APROVADO" in decision_text.upper():
+        texto = texto.replace(
+            "🟡 PEDIDO AGUARDANDO APROVAÇÃO",
+            "🟢 PEDIDO APROVADO",
+            1,
+        )
+
+    elif "REJEITADO" in decision_text.upper():
+        texto = texto.replace(
+            "🟡 PEDIDO AGUARDANDO APROVAÇÃO",
+            "🔴 PEDIDO REJEITADO",
+            1,
+        )
+
     bot_api(
         "editMessageText",
         {
             "chat_id": chat_id,
             "message_id": message_id,
-            "text": f"{original_text}\n\n{decision_text}",
+            "text": f"{texto}\n\n{decision_text}",
             "parse_mode": "HTML",
             "reply_markup": {"inline_keyboard": []},
         },
