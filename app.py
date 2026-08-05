@@ -27,6 +27,7 @@ from reportlab.platypus import (
     PageBreak,
     KeepTogether,
 )
+from reportlab.lib.utils import ImageReader
 
 try:
     from telegram_sender import enviar_telegram as enviar_telegram_configurado
@@ -2721,18 +2722,35 @@ def gerar_laudo_pmoc_pdf(preventiva_id):
                     try:
                         imagem = RLImage(
                             str(caminho),
-                            width=78 * mm,
-                            height=58 * mm,
+                            width=72 * mm,
+                            height=52 * mm,
                             kind="proportional",
                         )
 
-                        conteudo = [
-                            imagem,
-                            Spacer(1, 1 * mm),
-                            Paragraph(nome, pequeno),
-                        ]
+                        conteudo_foto = Table(
+                            [
+                                [imagem],
+                                [Spacer(1, 1 * mm)],
+                                [Paragraph(nome, pequeno)],
+                            ],
+                            colWidths=[82 * mm],
+                            hAlign="CENTER",
+                        )
 
-                        linha.append(KeepTogether(conteudo))
+                        conteudo_foto.setStyle(
+                            TableStyle(
+                                [
+                                    ("ALIGN", (0, 0), (-1, -1), "CENTER"),
+                                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                                    ("LEFTPADDING", (0, 0), (-1, -1), 0),
+                                    ("RIGHTPADDING", (0, 0), (-1, -1), 0),
+                                    ("TOPPADDING", (0, 0), (-1, -1), 0),
+                                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                                ]
+                            )
+                        )
+
+                        linha.append(conteudo_foto)
                     except Exception:
                         linha.append(
                             Paragraph(
