@@ -15,6 +15,7 @@ venv/
 # Arquivos gerados
 shop_data/pdfs/
 shop_data/qrcodes/
+shop_data/pmoc/
 
 # Backups
 *.bak
