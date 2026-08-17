@@ -565,163 +565,254 @@ def tela_solicitacoes(tipo_padrao=None):
     t1, t2 = st.tabs(["Nova Solicitação", "Solicitações"])
 
     with t1:
+        tipo = tipo_padrao or st.selectbox(
+            "Tipo",
+            ["MATERIAL", "SERVICO"],
+            key="tipo_nova_solicitacao",
+        )
+
+        vinculo_tipo = None
+        vinculo_id = None
+
+        if tipo == "SERVICO":
+            st.markdown("#### Vínculo com manutenção")
+
+            tipo_vinculo_label = st.selectbox(
+                "Vincular esta solicitação a uma ordem?",
+                [
+                    "Sem vínculo",
+                    "Ordem de Serviço",
+                    "Ordem de Serviço da Frota",
+                ],
+                key="tipo_vinculo_solicitacao",
+            )
+
+            if tipo_vinculo_label == "Ordem de Serviço":
+                ordens = carregar_ordens_servico_abertas()
+
+                if ordens.empty:
+                    st.info("Não existem ordens de serviço abertas.")
+                else:
+                    ordem_map = {
+                        (
+                            f"OS #{int(r['id'])} | "
+                            f"{r['maquina']} | "
+                            f"{str(r['problem_description'] or '')[:60]}"
+                        ): int(r["id"])
+                        for _, r in ordens.iterrows()
+                    }
+
+                    ordem_label = st.selectbox(
+                        "Ordem de Serviço",
+                        list(ordem_map.keys()),
+                        key="vinculo_os_solicitacao",
+                    )
+
+                    vinculo_tipo = "ORDEM_SERVICO"
+                    vinculo_id = ordem_map[ordem_label]
+
+            elif tipo_vinculo_label == "Ordem de Serviço da Frota":
+                ordens_frota = carregar_ordens_frota_abertas()
+
+                if ordens_frota.empty:
+                    st.info("Não existem ordens de serviço da frota abertas.")
+                else:
+                    frota_map = {
+                        (
+                            f"{r['numero']} | "
+                            f"{r['ativo_codigo']} | "
+                            f"{r['ativo_descricao']} | "
+                            f"{str(r['problem_description'] or '')[:60]}"
+                        ): int(r["id"])
+                        for _, r in ordens_frota.iterrows()
+                    }
+
+                    frota_label = st.selectbox(
+                        "Ordem de Serviço da Frota",
+                        list(frota_map.keys()),
+                        key="vinculo_frota_solicitacao",
+                    )
+
+                    vinculo_tipo = "FROTA"
+                    vinculo_id = frota_map[frota_label]
+
         with st.form("nova_solicitacao", clear_on_submit=True):
-            tipo = tipo_padrao or st.selectbox("Tipo", ["MATERIAL", "SERVICO"])
             descricao = st.text_area("Descrição da solicitação")
 
             if tipo == "MATERIAL":
                 c1, c2 = st.columns(2)
-                quantidade = c1.number_input("Quantidade", min_value=0.0, step=1.0)
-                unidade = c2.text_input("Unidade", value="UN")
+
+                quantidade = c1.number_input(
+                    "Quantidade",
+                    min_value=0.0,
+                    step=1.0,
+                )
+
+                unidade = c2.text_input(
+                    "Unidade",
+                    value="UN",
+                )
             else:
                 quantidade = 0
                 unidade = ""
 
             centro_custo_id = seletor_centro_custo(
-                "Centro de custo", key="cc_solicitacao"
+                "Centro de custo",
+                key="cc_solicitacao",
             )
+
             prioridade = st.selectbox(
-                "Prioridade", ["Baixa", "Normal", "Alta", "Urgente"], index=1
+                "Prioridade",
+                ["Baixa", "Normal", "Alta", "Urgente"],
+                index=1,
             )
+
             observacao = st.text_area("Observação")
-            anexos = st.file_uploader("Anexos", accept_multiple_files=True)
+
+            anexos = st.file_uploader(
+                "Anexos",
+                accept_multiple_files=True,
+            )
 
             salvar = st.form_submit_button(
-                "Salvar Solicitação", use_container_width=True
+                "Salvar Solicitação",
+                use_container_width=True,
             )
 
-        if salvar:
-            if not descricao.strip():
-                st.error("Informe a descrição da solicitação.")
-            else:
-                solicitacao_id, numero = criar_solicitacao(
-                    tipo,
-                    descricao.strip(),
-                    quantidade,
-                    unidade,
-                    centro_custo_id,
-                    prioridade,
-                    observacao,
-                    st.session_state.usuario,
-                )
+            if salvar:
+                if not descricao.strip():
+                    st.error("Informe a descrição da solicitação.")
+                else:
+                    solicitacao_id, numero = criar_solicitacao(
+                        tipo,
+                        descricao.strip(),
+                        quantidade,
+                        unidade,
+                        centro_custo_id,
+                        prioridade,
+                        observacao,
+                        st.session_state.usuario,
+                        vinculo_tipo=vinculo_tipo,
+                        vinculo_id=vinculo_id,
+                    )
 
-                adir = Path("shop_data") / "solicitacoes" / numero
-                adir.mkdir(parents=True, exist_ok=True)
+                    adir = Path("shop_data") / "solicitacoes" / numero
+                    adir.mkdir(parents=True, exist_ok=True)
 
-                for arq in anexos:
-                    dest = adir / arq.name
-                    dest.write_bytes(arq.getbuffer())
-                    inserir_anexo_solicitacao(
-                        solicitacao_id,
-                        arq.name,
-                        str(dest),
+                    for arq in anexos:
+                        dest = adir / arq.name
+                        dest.write_bytes(arq.getbuffer())
+                        inserir_anexo_solicitacao(
+                            solicitacao_id,
+                            arq.name,
+                            str(dest),
+                            st.session_state.usuario,
+                        )
+
+                    centro_nome = nome_centro_custo(centro_custo_id)
+
+                    msg = mensagem_solicitacao_criada(
+                        numero,
+                        tipo,
+                        descricao.strip(),
+                        quantidade,
+                        unidade,
+                        centro_nome,
+                        prioridade,
                         st.session_state.usuario,
                     )
 
-                centro_nome = nome_centro_custo(centro_custo_id)
+                    try:
+                        telegram_mod.enviar_telegram(msg)
+                    except Exception as e:
+                        print("Erro ao enviar solicitação para Telegram:", e)
 
-                msg = mensagem_solicitacao_criada(
-                    numero,
-                    tipo,
-                    descricao.strip(),
-                    quantidade,
-                    unidade,
-                    centro_nome,
-                    prioridade,
-                    st.session_state.usuario,
-                )
+                    st.success(f"Solicitação {numero} criada com sucesso.")
+                    st.rerun()
 
-                try:
-                    telegram_mod.enviar_telegram(msg)
-                except Exception as e:
-                    print("Erro ao enviar solicitação para Telegram:", e)
-
-                st.success(f"Solicitação {numero} criada com sucesso.")
-                st.rerun()
-
-    with t2:
-        filtro_tipo = tipo_padrao or st.selectbox(
-            "Filtrar tipo", ["TODOS", "MATERIAL", "SERVICO"]
-        )
-        filtro_status = st.selectbox(
-            "Filtrar status",
-            ["TODOS", "ABERTA", "EM_ANALISE", "CONVERTIDA", "CANCELADA"],
-        )
-
-        tipo_consulta = None if filtro_tipo == "TODOS" else filtro_tipo
-        df = carregar_solicitacoes(tipo_consulta)
-
-        if df.empty:
-            st.info("Nenhuma solicitação cadastrada.")
-            return
-
-        if filtro_status != "TODOS":
-            df = df[df["status"] == filtro_status]
-
-        st.dataframe(
-            df.rename(
-                columns={
-                    "numero": "Número",
-                    "tipo": "Tipo",
-                    "descricao": "Descrição",
-                    "quantidade": "Quantidade",
-                    "unidade": "Unidade",
-                    "centro_custo": "Centro de custo",
-                    "prioridade": "Prioridade",
-                    "status": "Status",
-                    "solicitado_por": "Solicitado por",
-                    "criado_em": "Criado em",
-                }
-            ),
-            use_container_width=True,
-            hide_index=True,
-        )
-
-        if df.empty:
-            return
-
-        opts = [
-            f"{r.numero} | {r.tipo} | {r.status} | {r.prioridade}"
-            for r in df.itertuples()
-        ]
-        esc = st.selectbox("Abrir solicitação", opts)
-        solicitacao_id = int(df.iloc[opts.index(esc)].id)
-        sol = buscar_solicitacao(solicitacao_id)
-
-        st.markdown(f"### {sol['numero']} - {sol['tipo']} - {sol['status']}")
-        st.write(f"**Descrição:** {sol['descricao']}")
-        st.write(
-            f"**Centro de custo:** {sol.get('centro_custo') or 'Sem centro de custo'}"
-        )
-        st.write(f"**Prioridade:** {sol['prioridade']}")
-        st.write(f"**Solicitado por:** {sol['solicitado_por']}")
-        st.write(f"**Observação:** {sol.get('observacao') or ''}")
-
-        anexos = carregar_anexos_solicitacao(solicitacao_id)
-        st.markdown("### 📎 Anexos")
-        if anexos.empty:
-            st.info("Nenhum anexo.")
-        else:
-            for a in anexos.itertuples():
-                p = Path(a.caminho)
-                if p.exists():
-                    with open(p, "rb") as f:
-                        st.download_button(
-                            f"Baixar {a.nome_arquivo}",
-                            f,
-                            file_name=a.nome_arquivo,
-                            key=f"sol_anexo_{a.id}",
-                        )
-
-        if st.session_state.perfil in ["admin", "almoxarifado", "aprovador"]:
-            st.markdown("### Alterar status")
-            novo_status = st.selectbox(
-                "Status", ["ABERTA", "EM_ANALISE", "CONVERTIDA", "CANCELADA"]
+        with t2:
+            filtro_tipo = tipo_padrao or st.selectbox(
+                "Filtrar tipo", ["TODOS", "MATERIAL", "SERVICO"]
             )
-            if st.button("Salvar status", use_container_width=True):
-                alterar_status_solicitacao(solicitacao_id, novo_status)
-                st.success("Status atualizado.")
-                st.rerun()
+            filtro_status = st.selectbox(
+                "Filtrar status",
+                ["TODOS", "ABERTA", "EM_ANALISE", "CONVERTIDA", "CANCELADA"],
+            )
+
+            tipo_consulta = None if filtro_tipo == "TODOS" else filtro_tipo
+            df = carregar_solicitacoes(tipo_consulta)
+
+            if df.empty:
+                st.info("Nenhuma solicitação cadastrada.")
+                return
+
+            if filtro_status != "TODOS":
+                df = df[df["status"] == filtro_status]
+
+            st.dataframe(
+                df.rename(
+                    columns={
+                        "numero": "Número",
+                        "tipo": "Tipo",
+                        "descricao": "Descrição",
+                        "quantidade": "Quantidade",
+                        "unidade": "Unidade",
+                        "centro_custo": "Centro de custo",
+                        "prioridade": "Prioridade",
+                        "status": "Status",
+                        "solicitado_por": "Solicitado por",
+                        "criado_em": "Criado em",
+                    }
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
+
+            if df.empty:
+                return
+
+            opts = [
+                f"{r.numero} | {r.tipo} | {r.status} | {r.prioridade}"
+                for r in df.itertuples()
+            ]
+            esc = st.selectbox("Abrir solicitação", opts)
+            solicitacao_id = int(df.iloc[opts.index(esc)].id)
+            sol = buscar_solicitacao(solicitacao_id)
+
+            st.markdown(f"### {sol['numero']} - {sol['tipo']} - {sol['status']}")
+            st.write(f"**Descrição:** {sol['descricao']}")
+            st.write(
+                f"**Centro de custo:** {sol.get('centro_custo') or 'Sem centro de custo'}"
+            )
+            st.write(f"**Prioridade:** {sol['prioridade']}")
+            st.write(f"**Solicitado por:** {sol['solicitado_por']}")
+            st.write(f"**Observação:** {sol.get('observacao') or ''}")
+
+            anexos = carregar_anexos_solicitacao(solicitacao_id)
+            st.markdown("### 📎 Anexos")
+            if anexos.empty:
+                st.info("Nenhum anexo.")
+            else:
+                for a in anexos.itertuples():
+                    p = Path(a.caminho)
+                    if p.exists():
+                        with open(p, "rb") as f:
+                            st.download_button(
+                                f"Baixar {a.nome_arquivo}",
+                                f,
+                                file_name=a.nome_arquivo,
+                                key=f"sol_anexo_{a.id}",
+                            )
+
+            if st.session_state.perfil in ["admin", "almoxarifado", "aprovador"]:
+                st.markdown("### Alterar status")
+                novo_status = st.selectbox(
+                    "Status", ["ABERTA", "EM_ANALISE", "CONVERTIDA", "CANCELADA"]
+                )
+                if st.button("Salvar status", use_container_width=True):
+                    alterar_status_solicitacao(solicitacao_id, novo_status)
+                    st.success("Status atualizado.")
+                    st.rerun()
 
 
 def tela_novo_pedido():
@@ -2370,13 +2461,20 @@ def tela_novo_servico():
 
             solicitacao_map[label] = int(sol["id"])
 
-    solicitacao_label = st.selectbox(
-        "Solicitação de serviço",
-        list(solicitacao_map.keys()),
-        key="novo_servico_solicitacao",
-    )
+    solicitacao_label = None
+    solicitacao_id = None
 
-    solicitacao_id = solicitacao_map[solicitacao_label]
+    if solicitacao_map:
+        solicitacao_label = st.selectbox(
+            "Solicitação",
+            list(solicitacao_map.keys()),
+            key="novo_servico_solicitacao",
+        )
+
+        if solicitacao_label in solicitacao_map:
+            solicitacao_id = solicitacao_map[solicitacao_label]
+    else:
+        st.info("Não existem solicitações de serviço abertas.")
     solicitacao_selecionada = None
 
     if solicitacao_id:

@@ -401,6 +401,28 @@ def init_db():
             criado_em DATETIME NOT NULL,
             atualizado_em DATETIME NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS fleet_service_orders (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            numero VARCHAR(30) NULL UNIQUE,
+            fleet_asset_id INT NOT NULL,
+            tipo_manutencao VARCHAR(30) NOT NULL DEFAULT 'Corretiva',
+            opened_by VARCHAR(150) NOT NULL,
+            start_datetime DATETIME NOT NULL,
+            end_datetime DATETIME NULL,
+            leitura_medidor DECIMAL(12,2) NULL,
+            problem_description TEXT NOT NULL,
+            solution_description TEXT NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'Aberta',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NULL,
+
+            INDEX idx_fleet_os_asset (fleet_asset_id),
+            INDEX idx_fleet_os_status (status),
+
+            CONSTRAINT fk_fleet_os_asset
+                FOREIGN KEY (fleet_asset_id)
+                REFERENCES fleet_assets(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS machine_components (
             id INT AUTO_INCREMENT PRIMARY KEY,
             codigo VARCHAR(50) NOT NULL UNIQUE,
@@ -1487,6 +1509,147 @@ def delete_fleet_asset(asset_id):
         """,
         {
             "id": asset_id,
+        },
+    )
+
+
+def get_fleet_service_orders():
+    return fetch_df("""
+        SELECT
+            fso.id,
+            fso.numero,
+            fso.fleet_asset_id,
+            fa.codigo AS ativo_codigo,
+            fa.descricao AS ativo_descricao,
+            fa.tipo AS ativo_tipo,
+            fa.tipo_medidor,
+            fso.tipo_manutencao,
+            fso.opened_by,
+            fso.start_datetime,
+            fso.end_datetime,
+            fso.leitura_medidor,
+            fso.problem_description,
+            fso.solution_description,
+            fso.status,
+            fso.created_at,
+            fso.updated_at
+        FROM fleet_service_orders fso
+        INNER JOIN fleet_assets fa
+            ON fa.id = fso.fleet_asset_id
+        ORDER BY fso.id DESC
+        """)
+
+
+def create_fleet_service_order(
+    fleet_asset_id,
+    tipo_manutencao,
+    opened_by,
+    start_datetime,
+    leitura_medidor,
+    problem_description,
+):
+    result = execute(
+        """
+        INSERT INTO fleet_service_orders (
+            fleet_asset_id,
+            tipo_manutencao,
+            opened_by,
+            start_datetime,
+            leitura_medidor,
+            problem_description,
+            status,
+            created_at,
+            updated_at
+        )
+        VALUES (
+            :fleet_asset_id,
+            :tipo_manutencao,
+            :opened_by,
+            :start_datetime,
+            :leitura_medidor,
+            :problem_description,
+            'Aberta',
+            :created_at,
+            :updated_at
+        )
+        """,
+        {
+            "fleet_asset_id": int(fleet_asset_id),
+            "tipo_manutencao": tipo_manutencao,
+            "opened_by": opened_by,
+            "start_datetime": start_datetime,
+            "leitura_medidor": leitura_medidor,
+            "problem_description": problem_description.strip(),
+            "created_at": now_br(),
+            "updated_at": now_br(),
+        },
+    )
+
+    order_id = int(result.lastrowid)
+
+    numero = f"FOS-{order_id:06d}"
+
+    execute(
+        """
+        UPDATE fleet_service_orders
+        SET numero=:numero
+        WHERE id=:id
+        """,
+        {
+            "id": order_id,
+            "numero": numero,
+        },
+    )
+
+    return order_id, numero
+
+
+def update_fleet_service_order(
+    order_id,
+    tipo_manutencao,
+    start_datetime,
+    end_datetime,
+    leitura_medidor,
+    problem_description,
+    solution_description,
+    status,
+):
+    execute(
+        """
+        UPDATE fleet_service_orders
+        SET
+            tipo_manutencao=:tipo_manutencao,
+            start_datetime=:start_datetime,
+            end_datetime=:end_datetime,
+            leitura_medidor=:leitura_medidor,
+            problem_description=:problem_description,
+            solution_description=:solution_description,
+            status=:status,
+            updated_at=:updated_at
+        WHERE id=:id
+        """,
+        {
+            "id": int(order_id),
+            "tipo_manutencao": tipo_manutencao,
+            "start_datetime": start_datetime,
+            "end_datetime": end_datetime,
+            "leitura_medidor": leitura_medidor,
+            "problem_description": problem_description.strip(),
+            "solution_description": solution_description.strip(),
+            "status": status,
+            "updated_at": now_br(),
+        },
+    )
+
+
+def delete_fleet_service_order(order_id):
+    execute(
+        """
+        DELETE FROM fleet_service_orders
+        WHERE id=:id
+        """,
+        {
+            "id": int(order_id),
         },
     )
 
@@ -6810,12 +6973,14 @@ elif menu == "Frota":
     st.subheader("Frota")
 
     frota_df = get_fleet_assets()
+    custos_frota_df = shop_manager.carregar_custos_frota_por_ativo()
 
-    tab1, tab2, tab3 = st.tabs(
+    tab1, tab2, tab3, tab4 = st.tabs(
         [
             "Dashboard",
             "Novo ativo",
             "Editar / Excluir",
+            "Ordens de Serviço",
         ]
     )
 
@@ -6838,10 +7003,27 @@ elif menu == "Frota":
 
         c1, c2, c3, c4 = st.columns(4)
 
+        custo_total_frota = 0.0
+
+        if not custos_frota_df.empty:
+            custo_total_frota = (
+                pd.to_numeric(
+                    custos_frota_df["custo_total"],
+                    errors="coerce",
+                )
+                .fillna(0)
+                .sum()
+            )
+
         c1.metric("Total da frota", int(total))
         c2.metric("Ativos", int(ativos))
         c3.metric("Em manutenção", int(manutencao))
-        c4.metric("Desativados", int(desativados))
+        c4.metric(
+            "Custo de manutenção",
+            f"R$ {custo_total_frota:,.2f}".replace(",", "X")
+            .replace(".", ",")
+            .replace("X", "."),
+        )
 
         st.divider()
         st.markdown("### Ativos da frota")
@@ -6850,7 +7032,26 @@ elif menu == "Frota":
             st.info("Nenhum ativo cadastrado.")
 
         else:
-            tabela = frota_df[
+            tabela_base = frota_df.copy()
+            if not custos_frota_df.empty:
+                tabela_base = tabela_base.merge(
+                    custos_frota_df[
+                        [
+                            "fleet_asset_id",
+                            "custo_total",
+                        ]
+                    ],
+                    left_on="id",
+                    right_on="fleet_asset_id",
+                    how="left",
+                )
+                tabela_base["custo_total"] = pd.to_numeric(
+                    tabela_base["custo_total"],
+                    errors="coerce",
+                ).fillna(0)
+            else:
+                tabela_base["custo_total"] = 0.0
+            tabela = tabela_base[
                 [
                     "codigo",
                     "tipo",
@@ -6862,6 +7063,7 @@ elif menu == "Frota":
                     "tipo_medidor",
                     "leitura_atual",
                     "status",
+                    "custo_total",
                 ]
             ].copy()
 
@@ -6877,7 +7079,14 @@ elif menu == "Frota":
                     "tipo_medidor": "Medidor",
                     "leitura_atual": "Leitura atual",
                     "status": "Status",
+                    "custo_total": "Custo acumulado",
                 }
+            )
+
+            tabela["Custo acumulado"] = tabela["Custo acumulado"].apply(
+                lambda valor: f"R$ {float(valor):,.2f}".replace(",", "X")
+                .replace(".", ",")
+                .replace("X", ".")
             )
 
             st.dataframe(
@@ -7186,6 +7395,446 @@ elif menu == "Frota":
                     st.success("Ativo excluído.")
                     st.rerun()
 
+    # =====================================================
+    # ORDENS DE SERVIÇO DA FROTA
+    # =====================================================
+
+    with tab4:
+        frota_os_df = get_fleet_service_orders()
+
+        sub1, sub2, sub3 = st.tabs(
+            [
+                "Nova OS",
+                "Editar / Finalizar",
+                "Histórico",
+            ]
+        )
+
+        # =====================================================
+        # NOVA OS
+        # =====================================================
+
+        with sub1:
+            if frota_df.empty:
+                st.warning("Cadastre um ativo da frota antes de abrir uma ordem.")
+            else:
+                ativos_map = {
+                    (f"{r['codigo']} | " f"{r['tipo']} | " f"{r['descricao']}"): r
+                    for _, r in frota_df.iterrows()
+                    if str(r["status"]).strip().upper() != "DESATIVADO"
+                }
+
+                if not ativos_map:
+                    st.warning("Não existem ativos disponíveis para abertura de OS.")
+                else:
+                    with st.form(
+                        "nova_fleet_os",
+                        clear_on_submit=True,
+                    ):
+                        ativo_label = st.selectbox(
+                            "Ativo da frota",
+                            list(ativos_map.keys()),
+                        )
+
+                        ativo = ativos_map[ativo_label]
+
+                        c1, c2 = st.columns(2)
+
+                        tipo_manutencao = c1.selectbox(
+                            "Tipo de manutenção",
+                            [
+                                "Corretiva",
+                                "Preventiva",
+                                "Inspeção",
+                            ],
+                        )
+
+                        leitura_atual = (
+                            0.0
+                            if pd.isna(ativo["leitura_atual"])
+                            else float(ativo["leitura_atual"])
+                        )
+
+                        leitura_medidor = c2.number_input(
+                            (
+                                f"Leitura do {ativo['tipo_medidor']}"
+                                if str(ativo["tipo_medidor"]) != "SEM MEDIDOR"
+                                else "Leitura"
+                            ),
+                            min_value=0.0,
+                            value=leitura_atual,
+                            step=1.0,
+                        )
+
+                        c3, c4 = st.columns(2)
+
+                        data_inicio = c3.date_input(
+                            "Data de abertura",
+                            value=date.today(),
+                            format="DD/MM/YYYY",
+                        )
+
+                        hora_inicio = c4.time_input(
+                            "Hora de abertura",
+                            value=now_br()
+                            .time()
+                            .replace(
+                                second=0,
+                                microsecond=0,
+                            ),
+                        )
+
+                        problema = st.text_area(
+                            "Descrição do problema / serviço necessário"
+                        )
+
+                        salvar_os = st.form_submit_button(
+                            "Abrir ordem de serviço",
+                            use_container_width=True,
+                        )
+
+                        if salvar_os:
+                            if not problema.strip():
+                                st.error("Informe a descrição do serviço.")
+                                st.stop()
+
+                            order_id, numero = create_fleet_service_order(
+                                fleet_asset_id=int(ativo["id"]),
+                                tipo_manutencao=tipo_manutencao,
+                                opened_by=user["usuario"],
+                                start_datetime=combine_date_time(
+                                    data_inicio,
+                                    hora_inicio,
+                                ),
+                                leitura_medidor=(
+                                    leitura_medidor
+                                    if str(ativo["tipo_medidor"]) != "SEM MEDIDOR"
+                                    else None
+                                ),
+                                problem_description=problema,
+                            )
+
+                            st.success(f"Ordem {numero} criada com sucesso.")
+                            st.rerun()
+
+        # =====================================================
+        # EDITAR / FINALIZAR
+        # =====================================================
+
+        with sub2:
+            if frota_os_df.empty:
+                st.info("Nenhuma ordem de serviço da frota cadastrada.")
+            else:
+                abertas_df = frota_os_df[
+                    ~frota_os_df["status"]
+                    .astype(str)
+                    .str.upper()
+                    .isin(["FINALIZADA", "CANCELADA"])
+                ].copy()
+
+                if abertas_df.empty:
+                    st.info("Não existem ordens abertas ou em andamento.")
+                else:
+                    os_map = {
+                        (
+                            f"{r['numero']} | "
+                            f"{r['ativo_codigo']} | "
+                            f"{r['ativo_descricao']}"
+                        ): r
+                        for _, r in abertas_df.iterrows()
+                    }
+
+                    os_label = st.selectbox(
+                        "Selecionar ordem",
+                        list(os_map.keys()),
+                    )
+
+                    os_row = os_map[os_label]
+                    servicos_fos_df = shop_manager.carregar_servicos_frota(
+                        int(os_row["id"])
+                    )
+
+                    with st.form(f"editar_fleet_os_{int(os_row['id'])}"):
+                        st.markdown(f"**Ordem:** {os_row['numero']}")
+
+                        st.markdown(
+                            f"**Ativo:** "
+                            f"{os_row['ativo_codigo']} - "
+                            f"{os_row['ativo_descricao']}"
+                        )
+
+                        tipos = [
+                            "Corretiva",
+                            "Preventiva",
+                            "Inspeção",
+                        ]
+
+                        tipo_atual = str(os_row["tipo_manutencao"] or "Corretiva")
+
+                        tipo_edit = st.selectbox(
+                            "Tipo de manutenção",
+                            tipos,
+                            index=(
+                                tipos.index(tipo_atual) if tipo_atual in tipos else 0
+                            ),
+                        )
+
+                        inicio = pd.to_datetime(
+                            os_row["start_datetime"],
+                            errors="coerce",
+                        )
+
+                        if pd.isna(inicio):
+                            inicio = now_br()
+
+                        c1, c2 = st.columns(2)
+
+                        data_inicio_edit = c1.date_input(
+                            "Data de abertura",
+                            value=inicio.date(),
+                            format="DD/MM/YYYY",
+                        )
+
+                        hora_inicio_edit = c2.time_input(
+                            "Hora de abertura",
+                            value=inicio.time().replace(
+                                second=0,
+                                microsecond=0,
+                            ),
+                        )
+
+                        leitura_edit = st.number_input(
+                            "Leitura do medidor",
+                            min_value=0.0,
+                            value=(
+                                0.0
+                                if pd.isna(os_row["leitura_medidor"])
+                                else float(os_row["leitura_medidor"])
+                            ),
+                            step=1.0,
+                        )
+
+                        problema_edit = st.text_area(
+                            "Descrição do problema",
+                            value=str(os_row["problem_description"] or ""),
+                        )
+
+                        status_opts = [
+                            "Aberta",
+                            "Em andamento",
+                            "Finalizada",
+                            "Cancelada",
+                        ]
+
+                        status_atual = str(os_row["status"] or "Aberta")
+
+                        status_edit = st.selectbox(
+                            "Status",
+                            status_opts,
+                            index=(
+                                status_opts.index(status_atual)
+                                if status_atual in status_opts
+                                else 0
+                            ),
+                        )
+
+                        solucao_edit = st.text_area(
+                            "Descrição da solução",
+                            value=(
+                                ""
+                                if pd.isna(os_row["solution_description"])
+                                else str(os_row["solution_description"] or "")
+                            ),
+                        )
+
+                        c3, c4 = st.columns(2)
+
+                        data_fim = c3.date_input(
+                            "Data de conclusão",
+                            value=date.today(),
+                            format="DD/MM/YYYY",
+                        )
+
+                        hora_fim = c4.time_input(
+                            "Hora de conclusão",
+                            value=now_br()
+                            .time()
+                            .replace(
+                                second=0,
+                                microsecond=0,
+                            ),
+                        )
+
+                        atualizar = st.form_submit_button(
+                            "Atualizar ordem",
+                            use_container_width=True,
+                        )
+
+                        if atualizar:
+                            end_datetime = None
+
+                            if status_edit == "Finalizada":
+                                if not solucao_edit.strip():
+                                    st.error(
+                                        "Informe a solução executada "
+                                        "antes de finalizar."
+                                    )
+                                    st.stop()
+
+                                end_datetime = combine_date_time(
+                                    data_fim,
+                                    hora_fim,
+                                )
+
+                            update_fleet_service_order(
+                                order_id=int(os_row["id"]),
+                                tipo_manutencao=tipo_edit,
+                                start_datetime=combine_date_time(
+                                    data_inicio_edit,
+                                    hora_inicio_edit,
+                                ),
+                                end_datetime=end_datetime,
+                                leitura_medidor=leitura_edit,
+                                problem_description=problema_edit,
+                                solution_description=solucao_edit,
+                                status=status_edit,
+                            )
+
+                            st.success("Ordem atualizada.")
+                            st.rerun()
+            st.divider()
+            st.markdown("### Serviços de terceiros / Custos")
+
+            if servicos_fos_df.empty:
+                st.info("Nenhuma solicitação de serviço vinculada a esta ordem.")
+
+            else:
+                custo_total = (
+                    pd.to_numeric(
+                        servicos_fos_df["valor_total"],
+                        errors="coerce",
+                    )
+                    .fillna(0)
+                    .sum()
+                )
+
+                c1, c2 = st.columns(2)
+
+                c1.metric(
+                    "Solicitações vinculadas",
+                    int(len(servicos_fos_df)),
+                )
+
+                c2.metric(
+                    "Custo total da OS",
+                    f"R$ {custo_total:,.2f}".replace(",", "X")
+                    .replace(".", ",")
+                    .replace("X", "."),
+                )
+
+                tabela_custos = servicos_fos_df[
+                    [
+                        "solicitacao_numero",
+                        "solicitacao_descricao",
+                        "servico_numero",
+                        "fornecedor",
+                        "valor_total",
+                        "servico_status",
+                    ]
+                ].copy()
+
+                tabela_custos["servico_numero"] = tabela_custos[
+                    "servico_numero"
+                ].fillna("Aguardando contratação")
+
+                tabela_custos["fornecedor"] = tabela_custos["fornecedor"].fillna("-")
+
+                tabela_custos["servico_status"] = tabela_custos[
+                    "servico_status"
+                ].fillna("Aguardando contratação")
+
+                tabela_custos["valor_total"] = (
+                    pd.to_numeric(
+                        tabela_custos["valor_total"],
+                        errors="coerce",
+                    )
+                    .fillna(0)
+                    .apply(
+                        lambda valor: f"R$ {valor:,.2f}".replace(",", "X")
+                        .replace(".", ",")
+                        .replace("X", ".")
+                    )
+                )
+
+                tabela_custos = tabela_custos.rename(
+                    columns={
+                        "solicitacao_numero": "Solicitação",
+                        "solicitacao_descricao": "Descrição",
+                        "servico_numero": "Serviço",
+                        "fornecedor": "Fornecedor",
+                        "valor_total": "Valor",
+                        "servico_status": "Status",
+                    }
+                )
+
+                st.dataframe(
+                    tabela_custos,
+                    use_container_width=True,
+                    hide_index=True,
+                )
+        # =====================================================
+        # HISTÓRICO
+        # =====================================================
+
+        with sub3:
+            if frota_os_df.empty:
+                st.info("Nenhuma ordem registrada.")
+            else:
+                historico = frota_os_df[
+                    [
+                        "numero",
+                        "ativo_codigo",
+                        "ativo_descricao",
+                        "tipo_manutencao",
+                        "start_datetime",
+                        "end_datetime",
+                        "leitura_medidor",
+                        "status",
+                        "problem_description",
+                        "solution_description",
+                    ]
+                ].copy()
+
+                historico["start_datetime"] = pd.to_datetime(
+                    historico["start_datetime"],
+                    errors="coerce",
+                ).dt.strftime("%d/%m/%Y %H:%M")
+
+                historico["end_datetime"] = pd.to_datetime(
+                    historico["end_datetime"],
+                    errors="coerce",
+                ).dt.strftime("%d/%m/%Y %H:%M")
+
+                historico = historico.rename(
+                    columns={
+                        "numero": "OS",
+                        "ativo_codigo": "Código",
+                        "ativo_descricao": "Ativo",
+                        "tipo_manutencao": "Tipo",
+                        "start_datetime": "Abertura",
+                        "end_datetime": "Conclusão",
+                        "leitura_medidor": "Leitura",
+                        "status": "Status",
+                        "problem_description": "Problema / Serviço",
+                        "solution_description": "Solução",
+                    }
+                )
+
+                st.dataframe(
+                    historico,
+                    use_container_width=True,
+                    hide_index=True,
+                )
 
 elif menu == "Produção":
     try:

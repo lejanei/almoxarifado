@@ -307,11 +307,14 @@ def criar_tabelas():
         solicitado_por VARCHAR(100),
         pedido_id INT NULL,
         servico_id INT NULL,
+        vinculo_tipo VARCHAR(30) NULL,
+        vinculo_id INT NULL,
         criado_em VARCHAR(50),
         atualizado_em VARCHAR(50),
         INDEX idx_sol_tipo (tipo),
         INDEX idx_sol_status (status),
-        INDEX idx_sol_cc (centro_custo_id)
+        INDEX idx_sol_cc (centro_custo_id),
+        INDEX idx_sol_vinculo (vinculo_tipo, vinculo_id)
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""")
 
     executar("""CREATE TABLE IF NOT EXISTS solicitacao_anexos (
@@ -468,6 +471,22 @@ def migrar_banco():
         "pedido_itens",
         "unidade_avulsa",
         "VARCHAR(30) NULL",
+    )
+
+    # =========================================================
+    # VÍNCULO DE SOLICITAÇÕES COM ORDENS DE MANUTENÇÃO
+    # =========================================================
+
+    adicionar_coluna_se_nao_existir(
+        "solicitacoes",
+        "vinculo_tipo",
+        "VARCHAR(30) NULL",
+    )
+
+    adicionar_coluna_se_nao_existir(
+        "solicitacoes",
+        "vinculo_id",
+        "INT NULL",
     )
 
     # Remove temporariamente a chave estrangeira para permitir
@@ -1849,33 +1868,75 @@ def criar_solicitacao(
     prioridade,
     observacao,
     usuario,
+    vinculo_tipo=None,
+    vinculo_id=None,
 ):
     with engine.begin() as conn:
         res = conn.execute(
             text("""
             INSERT INTO solicitacoes
-            (tipo, descricao, quantidade, unidade, centro_custo_id, prioridade, status, observacao, solicitado_por, criado_em, atualizado_em)
+            (
+                tipo,
+                descricao,
+                quantidade,
+                unidade,
+                centro_custo_id,
+                prioridade,
+                status,
+                observacao,
+                solicitado_por,
+                vinculo_tipo,
+                vinculo_id,
+                criado_em,
+                atualizado_em
+            )
             VALUES
-            (:tipo, :descricao, :quantidade, :unidade, :centro_custo_id, :prioridade, 'ABERTA', :observacao, :usuario, :agora, :agora)
-        """),
+            (
+                :tipo,
+                :descricao,
+                :quantidade,
+                :unidade,
+                :centro_custo_id,
+                :prioridade,
+                'ABERTA',
+                :observacao,
+                :usuario,
+                :vinculo_tipo,
+                :vinculo_id,
+                :agora,
+                :agora
+            )
+            """),
             {
                 "tipo": str(tipo).upper(),
                 "descricao": descricao,
                 "quantidade": float(quantidade or 0),
                 "unidade": unidade,
-                "centro_custo_id": int(centro_custo_id) if centro_custo_id else None,
+                "centro_custo_id": (int(centro_custo_id) if centro_custo_id else None),
                 "prioridade": prioridade,
                 "observacao": observacao,
                 "usuario": usuario,
+                "vinculo_tipo": (str(vinculo_tipo).upper() if vinculo_tipo else None),
+                "vinculo_id": (int(vinculo_id) if vinculo_id else None),
                 "agora": agora(),
             },
         )
+
         solicitacao_id = res.lastrowid
         numero = formatar_solicitacao_id(solicitacao_id)
+
         conn.execute(
-            text("UPDATE solicitacoes SET numero=:numero WHERE id=:id"),
-            {"numero": numero, "id": solicitacao_id},
+            text("""
+                UPDATE solicitacoes
+                SET numero=:numero
+                WHERE id=:id
+                """),
+            {
+                "numero": numero,
+                "id": solicitacao_id,
+            },
         )
+
     return solicitacao_id, numero
 
 
@@ -1892,6 +1953,99 @@ def carregar_solicitacoes(tipo=None):
         params["tipo"] = str(tipo).upper()
     sql += " ORDER BY s.id DESC"
     return carregar_df(sql, params)
+
+
+def carregar_ordens_servico_abertas():
+    return carregar_df("""
+        SELECT
+            so.id,
+            so.tipo,
+            so.status,
+            so.start_datetime,
+            so.problem_description,
+            m.nome AS maquina
+        FROM service_orders so
+        INNER JOIN machines m
+            ON m.id = so.machine_id
+        WHERE UPPER(so.status) NOT IN ('FINALIZADA', 'CANCELADA')
+        ORDER BY so.id DESC
+        """)
+
+
+def carregar_ordens_frota_abertas():
+    return carregar_df("""
+        SELECT
+            fso.id,
+            fso.numero,
+            fso.status,
+            fso.start_datetime,
+            fso.problem_description,
+            fa.codigo AS ativo_codigo,
+            fa.descricao AS ativo_descricao,
+            fa.tipo AS ativo_tipo
+        FROM fleet_service_orders fso
+        INNER JOIN fleet_assets fa
+            ON fa.id = fso.fleet_asset_id
+        WHERE UPPER(fso.status) NOT IN ('FINALIZADA', 'CANCELADA')
+        ORDER BY fso.id DESC
+        """)
+
+
+def carregar_servicos_frota(fleet_service_order_id):
+    return carregar_df(
+        """
+        SELECT
+            s.id AS solicitacao_id,
+            s.numero AS solicitacao_numero,
+            s.descricao AS solicitacao_descricao,
+            s.status AS solicitacao_status,
+
+            st.id AS servico_id,
+            st.numero AS servico_numero,
+            st.descricao AS servico_descricao,
+            st.valor_total,
+            st.status AS servico_status,
+            st.data AS data_servico,
+            f.nome AS fornecedor
+        FROM solicitacoes s
+        LEFT JOIN servicos_terceiros st
+            ON st.solicitacao_id = s.id
+        LEFT JOIN fornecedores f
+            ON f.id = st.fornecedor_id
+        WHERE s.vinculo_tipo = 'FROTA'
+          AND s.vinculo_id = :fleet_service_order_id
+        ORDER BY s.id DESC
+        """,
+        {"fleet_service_order_id": int(fleet_service_order_id)},
+    )
+
+
+def carregar_custos_frota_por_ativo():
+    return carregar_df("""
+        SELECT
+            fa.id AS fleet_asset_id,
+            fa.codigo,
+            fa.descricao,
+            COALESCE(SUM(st.valor_total), 0) AS custo_total
+        FROM fleet_assets fa
+
+        LEFT JOIN fleet_service_orders fso
+            ON fso.fleet_asset_id = fa.id
+
+        LEFT JOIN solicitacoes s
+            ON s.vinculo_tipo = 'FROTA'
+           AND s.vinculo_id = fso.id
+
+        LEFT JOIN servicos_terceiros st
+            ON st.solicitacao_id = s.id
+
+        GROUP BY
+            fa.id,
+            fa.codigo,
+            fa.descricao
+
+        ORDER BY fa.codigo
+        """)
 
 
 def buscar_solicitacao(solicitacao_id):
