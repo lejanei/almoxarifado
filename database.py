@@ -2003,13 +2003,22 @@ def carregar_servicos_frota(fleet_service_order_id):
             st.id AS servico_id,
             st.numero AS servico_numero,
             st.descricao AS servico_descricao,
-            st.valor_total,
+            CASE
+                WHEN UPPER(st.status) = 'FINALIZADO'
+                    THEN st.valor_total
+                ELSE 0
+            END AS valor_total,
             st.status AS servico_status,
             st.data AS data_servico,
             f.nome AS fornecedor
-        FROM solicitacoes s
+        FROM solicitacoes s        
         LEFT JOIN servicos_terceiros st
             ON st.solicitacao_id = s.id
+        AND UPPER(st.status) IN (
+            'APROVADO',
+            'EXECUTADO',
+            'FINALIZADO'
+        )
         LEFT JOIN fornecedores f
             ON f.id = st.fornecedor_id
         WHERE s.vinculo_tipo = 'FROTA'
@@ -2026,7 +2035,18 @@ def carregar_custos_frota_por_ativo():
             fa.id AS fleet_asset_id,
             fa.codigo,
             fa.descricao,
-            COALESCE(SUM(st.valor_total), 0) AS custo_total
+
+            COALESCE(
+                SUM(
+                    CASE
+                        WHEN UPPER(st.status) = 'FINALIZADO'
+                            THEN COALESCE(st.valor_total, 0)
+                        ELSE 0
+                    END
+                ),
+                0
+            ) AS custo_total
+
         FROM fleet_assets fa
 
         LEFT JOIN fleet_service_orders fso

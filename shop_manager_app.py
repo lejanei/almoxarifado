@@ -2958,7 +2958,7 @@ def tela_servicos():
 
     if st.session_state.perfil in ["admin", "aprovador"]:
         if st.button("🗑️ Excluir serviço", use_container_width=True):
-            excluir_servico(sid)
+            excluir_servico(sid, st.session_state.usuario)
             msg = f"🗑️ SERVIÇO EXCLUÍDO\n\nServiço: {serv['numero']}\nExcluído por: {st.session_state.usuario}"
             notificar_servico(
                 "Serviço excluído", sid, serv["numero"], msg, st.session_state.usuario

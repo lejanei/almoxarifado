@@ -8101,6 +8101,25 @@ elif menu == "Motores / Redutores / Periféricos":
                         }
                     )
 
+                    st.dataframe(
+                        os_view[
+                            [
+                                "OS",
+                                "Ação",
+                                "Máquina",
+                                "Tipo manutenção",
+                                "Abertura",
+                                "Finalização",
+                                "Status",
+                                "Problema",
+                                "Solução",
+                                "Observação componente",
+                            ]
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
             with hist_tab1:
                 eventos = []
 
@@ -8223,24 +8242,7 @@ elif menu == "Motores / Redutores / Periféricos":
                             html_evento,
                             unsafe_allow_html=True,
                         )
-        st.dataframe(
-            os_view[
-                [
-                    "OS",
-                    "Ação",
-                    "Máquina",
-                    "Tipo manutenção",
-                    "Abertura",
-                    "Finalização",
-                    "Status",
-                    "Problema",
-                    "Solução",
-                    "Observação componente",
-                ]
-            ],
-            use_container_width=True,
-            hide_index=True,
-        )
+
 
 elif menu == "Frota":
     st.subheader("Frota")
