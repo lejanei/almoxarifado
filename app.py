@@ -1,5 +1,6 @@
 import os, io, base64, hashlib, html, unicodedata
 from dotenv import load_dotenv
+from textwrap import dedent
 
 load_dotenv()
 from datetime import datetime, date, timedelta
@@ -384,6 +385,30 @@ def init_db():
         """CREATE TABLE IF NOT EXISTS service_order_employees (id INT AUTO_INCREMENT PRIMARY KEY,order_id INT NOT NULL,employee_id INT NOT NULL,start_datetime DATETIME NOT NULL,end_datetime DATETIME NULL,created_at DATETIME NOT NULL,CONSTRAINT fk_soe_order FOREIGN KEY (order_id) REFERENCES service_orders(id),CONSTRAINT fk_soe_employee FOREIGN KEY (employee_id) REFERENCES employees(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS audit_logs (id INT AUTO_INCREMENT PRIMARY KEY,usuario VARCHAR(150) NOT NULL, acao VARCHAR(150) NOT NULL,entidade VARCHAR(100),entidade_id VARCHAR(100),detalhes TEXT,criado_em DATETIME NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS service_order_parts (id INT AUTO_INCREMENT PRIMARY KEY,order_id INT NOT NULL,product_id INT NOT NULL,quantidade DECIMAL(18,3) NOT NULL,created_at DATETIME NOT NULL,CONSTRAINT fk_sop_order FOREIGN KEY (order_id) REFERENCES service_orders(id),CONSTRAINT fk_sop_product FOREIGN KEY (product_id) REFERENCES products(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS service_order_components (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT NOT NULL,
+            component_id INT NOT NULL,
+            acao VARCHAR(30) NOT NULL DEFAULT 'MANUTENCAO',
+            observacao TEXT NULL,
+            created_at DATETIME NOT NULL,
+
+            INDEX idx_soc_order (order_id),
+            INDEX idx_soc_component (component_id),
+
+            CONSTRAINT fk_soc_order
+                FOREIGN KEY (order_id)
+                REFERENCES service_orders(id),
+
+            CONSTRAINT fk_soc_component
+                FOREIGN KEY (component_id)
+                REFERENCES machine_components(id),
+
+            UNIQUE KEY uq_soc_order_component (
+                order_id,
+                component_id
+            )
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS fleet_assets (
             id INT AUTO_INCREMENT PRIMARY KEY,
             codigo VARCHAR(50) NOT NULL UNIQUE,
@@ -442,6 +467,49 @@ def init_db():
             CONSTRAINT fk_component_machine
                 FOREIGN KEY (machine_id)
                 REFERENCES machines(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS service_order_components (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            order_id INT NOT NULL,
+            component_id INT NOT NULL,
+            created_at DATETIME NOT NULL,
+
+            UNIQUE KEY uq_order_component (
+                order_id,
+                component_id
+            ),
+
+            CONSTRAINT fk_soc_order
+                FOREIGN KEY (order_id)
+                REFERENCES service_orders(id)
+                ON DELETE CASCADE,
+
+            CONSTRAINT fk_soc_component
+                FOREIGN KEY (component_id)
+                REFERENCES machine_components(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS component_location_history (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            component_id INT NOT NULL,
+            machine_id_anterior INT NULL,
+            machine_id_novo INT NULL,
+            localizacao_anterior VARCHAR(200) NULL,
+            localizacao_nova VARCHAR(200) NULL,
+            status_anterior VARCHAR(30) NULL,
+            status_novo VARCHAR(30) NULL,
+            service_order_id INT NULL,
+            motivo VARCHAR(255) NULL,
+            usuario VARCHAR(100) NULL,
+            created_at DATETIME NOT NULL,
+            INDEX idx_comp_hist_component (component_id),
+            INDEX idx_comp_hist_order (service_order_id),
+            CONSTRAINT fk_comp_hist_component
+                FOREIGN KEY (component_id)
+                REFERENCES machine_components(id),
+            CONSTRAINT fk_comp_hist_order
+                FOREIGN KEY (service_order_id)
+                REFERENCES service_orders(id)
+                ON DELETE SET NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS pmoc_maquinas (
             id INT AUTO_INCREMENT PRIMARY KEY,
@@ -611,6 +679,8 @@ def init_db():
             "ALTER TABLE machines ADD COLUMN preventiva_periodicidade_dias INT NULL",
             "ALTER TABLE service_orders ADD COLUMN preventiva_origem_id INT NULL",
             "ALTER TABLE service_orders ADD COLUMN preventiva_gerou_proxima TINYINT(1) NOT NULL DEFAULT 0",
+            "ALTER TABLE service_order_components ADD COLUMN acao VARCHAR(30) NOT NULL DEFAULT 'MANUTENCAO'",
+            "ALTER TABLE service_order_components ADD COLUMN observacao TEXT NULL",
             "ALTER TABLE pmoc_maquinas ADD COLUMN periodicidade_dias INT NOT NULL DEFAULT 90",
             "ALTER TABLE pmoc_preventivas ADD COLUMN gerou_proxima TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE pmoc_preventivas ADD COLUMN preventiva_origem_id INT NULL",
@@ -1306,6 +1376,35 @@ def update_machine_component(
     status,
     observacao,
 ):
+    atual_df = fetch_df(
+        """
+        SELECT
+            machine_id,
+            localizacao,
+            status
+        FROM machine_components
+        WHERE id=:id
+        LIMIT 1
+        """,
+        {"id": int(component_id)},
+    )
+
+    machine_id_anterior = None
+    localizacao_anterior = None
+    status_anterior = None
+
+    if not atual_df.empty:
+        atual = atual_df.iloc[0]
+
+        if not pd.isna(atual["machine_id"]):
+            machine_id_anterior = int(atual["machine_id"])
+
+        localizacao_anterior = (
+            None if pd.isna(atual["localizacao"]) else str(atual["localizacao"])
+        )
+
+        status_anterior = None if pd.isna(atual["status"]) else str(atual["status"])
+
     execute(
         """
         UPDATE machine_components
@@ -1326,7 +1425,7 @@ def update_machine_component(
         WHERE id=:id
         """,
         {
-            "id": component_id,
+            "id": int(component_id),
             "codigo": codigo.strip(),
             "tipo": tipo,
             "descricao": descricao.strip(),
@@ -1343,6 +1442,142 @@ def update_machine_component(
         },
     )
 
+    machine_id_novo = int(machine_id) if machine_id is not None else None
+
+    localizacao_nova = localizacao.strip() if str(localizacao or "").strip() else None
+
+    status_novo = str(status or "").strip()
+
+    houve_mudanca = (
+        machine_id_anterior != machine_id_novo
+        or (localizacao_anterior or "") != (localizacao_nova or "")
+        or (status_anterior or "") != status_novo
+    )
+
+    if houve_mudanca:
+        usuario = st.session_state.get("user", {}).get(
+            "usuario",
+            "sistema",
+        )
+
+        execute(
+            """
+            INSERT INTO component_location_history (
+                component_id,
+                machine_id_anterior,
+                machine_id_novo,
+                localizacao_anterior,
+                localizacao_nova,
+                status_anterior,
+                status_novo,
+                service_order_id,
+                motivo,
+                usuario,
+                created_at
+            )
+            VALUES (
+                :component_id,
+                :machine_id_anterior,
+                :machine_id_novo,
+                :localizacao_anterior,
+                :localizacao_nova,
+                :status_anterior,
+                :status_novo,
+                NULL,
+                :motivo,
+                :usuario,
+                :created_at
+            )
+            """,
+            {
+                "component_id": int(component_id),
+                "machine_id_anterior": machine_id_anterior,
+                "machine_id_novo": machine_id_novo,
+                "localizacao_anterior": localizacao_anterior,
+                "localizacao_nova": localizacao_nova,
+                "status_anterior": status_anterior,
+                "status_novo": status_novo,
+                "motivo": "Alteração manual do cadastro",
+                "usuario": usuario,
+                "created_at": now_br(),
+            },
+        )
+
+
+def get_component_location_history(component_id):
+    return fetch_df(
+        """
+        SELECT
+            h.id,
+            h.component_id,
+            ma.nome AS maquina_anterior,
+            mn.nome AS maquina_nova,
+            h.localizacao_anterior,
+            h.localizacao_nova,
+            h.status_anterior,
+            h.status_novo,
+            h.service_order_id,
+            h.motivo,
+            h.usuario,
+            h.created_at
+        FROM component_location_history h
+
+        LEFT JOIN machines ma
+            ON ma.id = h.machine_id_anterior
+
+        LEFT JOIN machines mn
+            ON mn.id = h.machine_id_novo
+
+        WHERE h.component_id=:component_id
+
+        ORDER BY h.id DESC
+        """,
+        {"component_id": int(component_id)},
+    )
+
+
+def get_component_service_history(component_id):
+    return fetch_df(
+        """
+        SELECT
+            soc.id AS vinculo_id,
+            soc.component_id,
+            soc.acao,
+            soc.observacao,
+            soc.created_at AS data_vinculo,
+
+            so.id AS service_order_id,
+            so.tipo AS ordem_tipo,
+            so.tipo_manutencao,
+            so.start_datetime,
+            so.end_datetime,
+            so.status AS ordem_status,
+            so.problem_description,
+            so.solution_description,
+
+            m.nome AS maquina_os
+
+        FROM service_order_components soc
+
+        INNER JOIN service_orders so
+            ON so.id = soc.order_id
+
+        INNER JOIN machines m
+            ON m.id = so.machine_id
+
+        WHERE soc.component_id = :component_id
+
+        ORDER BY
+            COALESCE(
+                so.end_datetime,
+                so.start_datetime,
+                soc.created_at
+            ) DESC,
+            so.id DESC
+        """,
+        {"component_id": int(component_id)},
+    )
+
 
 def delete_machine_component(component_id):
     execute(
@@ -1354,29 +1589,613 @@ def delete_machine_component(component_id):
     )
 
 
+def registrar_historico_componente(
+    component_id,
+    machine_id_anterior,
+    machine_id_novo,
+    localizacao_anterior,
+    localizacao_nova,
+    status_anterior,
+    status_novo,
+    service_order_id=None,
+    motivo=None,
+):
+    usuario = st.session_state.get("user", {}).get(
+        "usuario",
+        "sistema",
+    )
+
+    execute(
+        """
+        INSERT INTO component_location_history (
+            component_id,
+            machine_id_anterior,
+            machine_id_novo,
+            localizacao_anterior,
+            localizacao_nova,
+            status_anterior,
+            status_novo,
+            service_order_id,
+            motivo,
+            usuario,
+            created_at
+        )
+        VALUES (
+            :component_id,
+            :machine_id_anterior,
+            :machine_id_novo,
+            :localizacao_anterior,
+            :localizacao_nova,
+            :status_anterior,
+            :status_novo,
+            :service_order_id,
+            :motivo,
+            :usuario,
+            :created_at
+        )
+        """,
+        {
+            "component_id": int(component_id),
+            "machine_id_anterior": machine_id_anterior,
+            "machine_id_novo": machine_id_novo,
+            "localizacao_anterior": localizacao_anterior,
+            "localizacao_nova": localizacao_nova,
+            "status_anterior": status_anterior,
+            "status_novo": status_novo,
+            "service_order_id": (int(service_order_id) if service_order_id else None),
+            "motivo": motivo,
+            "usuario": usuario,
+            "created_at": now_br(),
+        },
+    )
+
+
+def vincular_componente_os(
+    order_id,
+    component_id,
+    acao,
+    observacao=None,
+):
+    execute(
+        """
+        INSERT INTO service_order_components (
+            order_id,
+            component_id,
+            acao,
+            observacao,
+            created_at
+        )
+        VALUES (
+            :order_id,
+            :component_id,
+            :acao,
+            :observacao,
+            :created_at
+        )
+        ON DUPLICATE KEY UPDATE
+            acao = VALUES(acao),
+            observacao = VALUES(observacao)
+        """,
+        {
+            "order_id": int(order_id),
+            "component_id": int(component_id),
+            "acao": acao,
+            "observacao": observacao,
+            "created_at": now_br(),
+        },
+    )
+
+
+def retirar_componente_da_maquina(
+    component_id,
+    order_id,
+    destino_localizacao,
+    status_destino="RESERVA",
+    observacao=None,
+):
+    componente_df = fetch_df(
+        """
+        SELECT
+            id,
+            machine_id,
+            localizacao,
+            status
+        FROM machine_components
+        WHERE id=:id
+        LIMIT 1
+        """,
+        {"id": int(component_id)},
+    )
+
+    if componente_df.empty:
+        raise ValueError("Componente não encontrado.")
+
+    comp = componente_df.iloc[0]
+
+    machine_id_anterior = (
+        None if pd.isna(comp["machine_id"]) else int(comp["machine_id"])
+    )
+
+    local_anterior = None if pd.isna(comp["localizacao"]) else str(comp["localizacao"])
+
+    status_anterior = str(comp["status"] or "")
+
+    execute(
+        """
+        UPDATE machine_components
+        SET
+            machine_id=NULL,
+            localizacao=:localizacao,
+            status=:status,
+            atualizado_em=:agora
+        WHERE id=:id
+        """,
+        {
+            "id": int(component_id),
+            "localizacao": destino_localizacao,
+            "status": status_destino,
+            "agora": now_br(),
+        },
+    )
+
+    registrar_historico_componente(
+        component_id=component_id,
+        machine_id_anterior=machine_id_anterior,
+        machine_id_novo=None,
+        localizacao_anterior=local_anterior,
+        localizacao_nova=destino_localizacao,
+        status_anterior=status_anterior,
+        status_novo=status_destino,
+        service_order_id=order_id,
+        motivo=(observacao or "Retirada de componente pela Ordem de Serviço"),
+    )
+
+    vincular_componente_os(
+        order_id=order_id,
+        component_id=component_id,
+        acao="RETIRADA",
+        observacao=observacao,
+    )
+
+
+def instalar_componente_na_maquina(
+    component_id,
+    order_id,
+    machine_id,
+    nova_localizacao,
+    observacao=None,
+):
+    componente_df = fetch_df(
+        """
+        SELECT
+            id,
+            machine_id,
+            localizacao,
+            status
+        FROM machine_components
+        WHERE id=:id
+        LIMIT 1
+        """,
+        {"id": int(component_id)},
+    )
+
+    if componente_df.empty:
+        raise ValueError("Componente não encontrado.")
+
+    comp = componente_df.iloc[0]
+
+    machine_id_anterior = (
+        None if pd.isna(comp["machine_id"]) else int(comp["machine_id"])
+    )
+
+    local_anterior = None if pd.isna(comp["localizacao"]) else str(comp["localizacao"])
+
+    status_anterior = str(comp["status"] or "")
+
+    execute(
+        """
+        UPDATE machine_components
+        SET
+            machine_id=:machine_id,
+            localizacao=:localizacao,
+            status='ATIVO',
+            atualizado_em=:agora
+        WHERE id=:id
+        """,
+        {
+            "id": int(component_id),
+            "machine_id": int(machine_id),
+            "localizacao": nova_localizacao,
+            "agora": now_br(),
+        },
+    )
+
+    registrar_historico_componente(
+        component_id=component_id,
+        machine_id_anterior=machine_id_anterior,
+        machine_id_novo=int(machine_id),
+        localizacao_anterior=local_anterior,
+        localizacao_nova=nova_localizacao,
+        status_anterior=status_anterior,
+        status_novo="ATIVO",
+        service_order_id=order_id,
+        motivo=(observacao or "Instalação de componente pela Ordem de Serviço"),
+    )
+
+    vincular_componente_os(
+        order_id=order_id,
+        component_id=component_id,
+        acao="INSTALACAO",
+        observacao=observacao,
+    )
+
+
+def substituir_componente_na_ordem(
+    order_id,
+    machine_id,
+    component_id_saida,
+    component_id_entrada,
+    destino_saida,
+    status_saida,
+    local_entrada,
+    observacao=None,
+):
+    usuario = st.session_state.get("user", {}).get(
+        "usuario",
+        "sistema",
+    )
+
+    agora_execucao = now_br()
+
+    with get_engine().begin() as conn:
+
+        # =====================================================
+        # 1. BUSCAR COMPONENTE QUE VAI SAIR
+        # =====================================================
+
+        saida = (
+            conn.execute(
+                text("""
+                SELECT
+                    id,
+                    machine_id,
+                    localizacao,
+                    status
+                FROM machine_components
+                WHERE id=:id
+                FOR UPDATE
+                """),
+                {"id": int(component_id_saida)},
+            )
+            .mappings()
+            .first()
+        )
+
+        if not saida:
+            raise ValueError("Componente que será retirado não foi encontrado.")
+
+        # =====================================================
+        # 2. BUSCAR COMPONENTE QUE VAI ENTRAR
+        # =====================================================
+
+        entrada = (
+            conn.execute(
+                text("""
+                SELECT
+                    id,
+                    machine_id,
+                    localizacao,
+                    status
+                FROM machine_components
+                WHERE id=:id
+                FOR UPDATE
+                """),
+                {"id": int(component_id_entrada)},
+            )
+            .mappings()
+            .first()
+        )
+
+        if not entrada:
+            raise ValueError("Componente substituto não foi encontrado.")
+
+        # =====================================================
+        # 3. VALIDAÇÕES
+        # =====================================================
+
+        if int(component_id_saida) == int(component_id_entrada):
+            raise ValueError(
+                "O componente retirado e o componente substituto "
+                "não podem ser o mesmo."
+            )
+
+        if saida["machine_id"] is None:
+            raise ValueError(
+                "O componente selecionado para retirada "
+                "não está instalado em uma máquina."
+            )
+
+        if int(saida["machine_id"]) != int(machine_id):
+            raise ValueError(
+                "O componente selecionado para retirada "
+                "não pertence à máquina desta OS."
+            )
+
+        if entrada["machine_id"] is not None:
+            raise ValueError(
+                "O componente substituto já está instalado " "em outra máquina."
+            )
+
+        if str(entrada["status"] or "").upper() == "DESATIVADO":
+            raise ValueError("Não é possível instalar um componente desativado.")
+
+        # Dados anteriores do componente que sai
+        saida_machine_anterior = int(saida["machine_id"])
+
+        saida_local_anterior = (
+            None if saida["localizacao"] is None else str(saida["localizacao"])
+        )
+
+        saida_status_anterior = str(saida["status"] or "")
+
+        # Dados anteriores do componente que entra
+        entrada_machine_anterior = (
+            None if entrada["machine_id"] is None else int(entrada["machine_id"])
+        )
+
+        entrada_local_anterior = (
+            None if entrada["localizacao"] is None else str(entrada["localizacao"])
+        )
+
+        entrada_status_anterior = str(entrada["status"] or "")
+
+        # =====================================================
+        # 4. RETIRAR COMPONENTE ATUAL
+        # =====================================================
+
+        conn.execute(
+            text("""
+                UPDATE machine_components
+                SET
+                    machine_id=NULL,
+                    localizacao=:localizacao,
+                    status=:status,
+                    atualizado_em=:agora
+                WHERE id=:id
+                """),
+            {
+                "id": int(component_id_saida),
+                "localizacao": destino_saida,
+                "status": status_saida,
+                "agora": agora_execucao,
+            },
+        )
+
+        # =====================================================
+        # 5. INSTALAR COMPONENTE SUBSTITUTO
+        # =====================================================
+
+        conn.execute(
+            text("""
+                UPDATE machine_components
+                SET
+                    machine_id=:machine_id,
+                    localizacao=:localizacao,
+                    status='ATIVO',
+                    atualizado_em=:agora
+                WHERE id=:id
+                """),
+            {
+                "id": int(component_id_entrada),
+                "machine_id": int(machine_id),
+                "localizacao": local_entrada,
+                "agora": agora_execucao,
+            },
+        )
+
+        # =====================================================
+        # 6. HISTÓRICO DO COMPONENTE RETIRADO
+        # =====================================================
+
+        conn.execute(
+            text("""
+                INSERT INTO component_location_history (
+                    component_id,
+                    machine_id_anterior,
+                    machine_id_novo,
+                    localizacao_anterior,
+                    localizacao_nova,
+                    status_anterior,
+                    status_novo,
+                    service_order_id,
+                    motivo,
+                    usuario,
+                    created_at
+                )
+                VALUES (
+                    :component_id,
+                    :machine_id_anterior,
+                    NULL,
+                    :localizacao_anterior,
+                    :localizacao_nova,
+                    :status_anterior,
+                    :status_novo,
+                    :service_order_id,
+                    :motivo,
+                    :usuario,
+                    :created_at
+                )
+                """),
+            {
+                "component_id": int(component_id_saida),
+                "machine_id_anterior": saida_machine_anterior,
+                "localizacao_anterior": saida_local_anterior,
+                "localizacao_nova": destino_saida,
+                "status_anterior": saida_status_anterior,
+                "status_novo": status_saida,
+                "service_order_id": int(order_id),
+                "motivo": (observacao or "Componente retirado em substituição"),
+                "usuario": usuario,
+                "created_at": agora_execucao,
+            },
+        )
+
+        # =====================================================
+        # 7. HISTÓRICO DO COMPONENTE INSTALADO
+        # =====================================================
+
+        conn.execute(
+            text("""
+                INSERT INTO component_location_history (
+                    component_id,
+                    machine_id_anterior,
+                    machine_id_novo,
+                    localizacao_anterior,
+                    localizacao_nova,
+                    status_anterior,
+                    status_novo,
+                    service_order_id,
+                    motivo,
+                    usuario,
+                    created_at
+                )
+                VALUES (
+                    :component_id,
+                    :machine_id_anterior,
+                    :machine_id_novo,
+                    :localizacao_anterior,
+                    :localizacao_nova,
+                    :status_anterior,
+                    'ATIVO',
+                    :service_order_id,
+                    :motivo,
+                    :usuario,
+                    :created_at
+                )
+                """),
+            {
+                "component_id": int(component_id_entrada),
+                "machine_id_anterior": entrada_machine_anterior,
+                "machine_id_novo": int(machine_id),
+                "localizacao_anterior": entrada_local_anterior,
+                "localizacao_nova": local_entrada,
+                "status_anterior": entrada_status_anterior,
+                "service_order_id": int(order_id),
+                "motivo": (observacao or "Componente instalado em substituição"),
+                "usuario": usuario,
+                "created_at": agora_execucao,
+            },
+        )
+
+        # =====================================================
+        # 8. VINCULAR COMPONENTE RETIRADO À OS
+        # =====================================================
+
+        conn.execute(
+            text("""
+                INSERT INTO service_order_components (
+                    order_id,
+                    component_id,
+                    acao,
+                    observacao,
+                    created_at
+                )
+                VALUES (
+                    :order_id,
+                    :component_id,
+                    'RETIRADA',
+                    :observacao,
+                    :created_at
+                )
+                ON DUPLICATE KEY UPDATE
+                    acao='RETIRADA',
+                    observacao=:observacao
+                """),
+            {
+                "order_id": int(order_id),
+                "component_id": int(component_id_saida),
+                "observacao": observacao,
+                "created_at": agora_execucao,
+            },
+        )
+
+        # =====================================================
+        # 9. VINCULAR COMPONENTE INSTALADO À OS
+        # =====================================================
+
+        conn.execute(
+            text("""
+                INSERT INTO service_order_components (
+                    order_id,
+                    component_id,
+                    acao,
+                    observacao,
+                    created_at
+                )
+                VALUES (
+                    :order_id,
+                    :component_id,
+                    'INSTALACAO',
+                    :observacao,
+                    :created_at
+                )
+                ON DUPLICATE KEY UPDATE
+                    acao='INSTALACAO',
+                    observacao=:observacao
+                """),
+            {
+                "order_id": int(order_id),
+                "component_id": int(component_id_entrada),
+                "observacao": observacao,
+                "created_at": agora_execucao,
+            },
+        )
+
+
 # ============================================================
 # FROTAS
 # ============================================================
 def get_fleet_assets():
     return fetch_df("""
         SELECT
-            id,
-            codigo,
-            tipo,
-            descricao,
-            marca,
-            modelo,
-            ano,
-            placa,
-            patrimonio,
-            tipo_medidor,
-            leitura_atual,
-            status,
-            observacao,
-            criado_em,
-            atualizado_em
-        FROM fleet_assets
-        ORDER BY tipo, codigo
+            fa.id,
+            fa.codigo,
+            fa.tipo,
+            fa.descricao,
+            fa.marca,
+            fa.modelo,
+            fa.ano,
+            fa.placa,
+            fa.patrimonio,
+            fa.tipo_medidor,
+            fa.leitura_atual,
+
+            fa.status AS status_cadastro,
+
+            CASE
+                WHEN UPPER(fa.status) = 'DESATIVADO'
+                    THEN 'DESATIVADO'
+
+                WHEN EXISTS (
+                    SELECT 1
+                    FROM fleet_service_orders fso
+                    WHERE fso.fleet_asset_id = fa.id
+                      AND UPPER(fso.status)
+                          NOT IN ('FINALIZADA', 'CANCELADA')
+                      AND DATE(fso.start_datetime) <= CURDATE()
+                )
+                    THEN 'EM MANUTENÇÃO'
+
+                ELSE 'ATIVO'
+            END AS status,
+
+            fa.observacao,
+            fa.criado_em,
+            fa.atualizado_em
+
+        FROM fleet_assets fa
+
+        ORDER BY fa.tipo, fa.codigo
         """)
 
 
@@ -4350,6 +5169,88 @@ def delete_part_from_order(vinculo_id, usuario_lancamento):
     )
 
 
+def get_service_order_components(order_id):
+    return fetch_df(
+        """
+        SELECT
+            soc.id,
+            soc.order_id,
+            soc.component_id,
+            soc.acao,
+            soc.observacao,
+            soc.created_at,
+
+            mc.codigo,
+            mc.tipo,
+            mc.descricao,
+            mc.fabricante,
+            mc.modelo,
+            mc.status,
+            mc.localizacao,
+
+            m.nome AS maquina_atual
+
+        FROM service_order_components soc
+
+        INNER JOIN machine_components mc
+            ON mc.id = soc.component_id
+
+        LEFT JOIN machines m
+            ON m.id = mc.machine_id
+
+        WHERE soc.order_id = :order_id
+
+        ORDER BY soc.id DESC
+        """,
+        {"order_id": int(order_id)},
+    )
+
+
+def add_service_order_component(
+    order_id,
+    component_id,
+    acao="MANUTENCAO",
+    observacao=None,
+):
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                INSERT INTO service_order_components (
+                    order_id,
+                    component_id,
+                    acao,
+                    observacao,
+                    created_at
+                )
+                VALUES (
+                    :order_id,
+                    :component_id,
+                    :acao,
+                    :observacao,
+                    :created_at
+                )
+                """),
+            {
+                "order_id": int(order_id),
+                "component_id": int(component_id),
+                "acao": acao,
+                "observacao": observacao,
+                "created_at": now_br(),
+            },
+        )
+
+
+def remove_service_order_component(link_id):
+    with get_engine().begin() as conn:
+        conn.execute(
+            text("""
+                DELETE FROM service_order_components
+                WHERE id = :id
+                """),
+            {"id": int(link_id)},
+        )
+
+
 if "logged_in" not in st.session_state:
     st.session_state.logged_in = False
 if "user" not in st.session_state:
@@ -6568,14 +7469,14 @@ elif menu == "Motores / Redutores / Periféricos":
 
     componentes_df = get_machine_components()
 
-    tab1, tab2, tab3 = st.tabs(
+    tab1, tab2, tab3, tab4 = st.tabs(
         [
             "Dashboard",
             "Novo componente",
             "Editar / Excluir",
+            "Histórico",
         ]
     )
-
     # =====================================================
     # DASHBOARD
     # =====================================================
@@ -6969,6 +7870,378 @@ elif menu == "Motores / Redutores / Periféricos":
                     st.success("Componente excluído.")
                     st.rerun()
 
+    # =====================================================
+    # HISTÓRICO DE LOCALIZAÇÃO
+    # =====================================================
+
+    with tab4:
+        if componentes_df.empty:
+            st.info("Nenhum componente cadastrado.")
+
+        else:
+            historico_map = {
+                (f"{r['codigo']} | " f"{r['tipo']} | " f"{r['descricao']}"): r
+                for _, r in componentes_df.iterrows()
+            }
+
+            componente_label = st.selectbox(
+                "Selecionar componente",
+                list(historico_map.keys()),
+                key="historico_componente",
+            )
+
+            componente = historico_map[componente_label]
+
+            st.markdown(f"### {componente['codigo']} - " f"{componente['descricao']}")
+
+            status_atual = str(componente["status"] or "-")
+
+            maquina_atual = (
+                "-" if pd.isna(componente["maquina"]) else str(componente["maquina"])
+            )
+
+            localizacao_atual = (
+                "-"
+                if pd.isna(componente["localizacao"])
+                else str(componente["localizacao"])
+            )
+
+            st.markdown(
+                """
+                <style>
+                .component-info-card {
+                    background: #182230;
+                    border: 1px solid #334155;
+                    border-top: 3px solid #16c7c9;
+                    border-radius: 14px;
+                    padding: 16px 18px;
+                    min-height: 120px;
+                    height: 120px;
+                    box-sizing: border-box;
+                    display: flex;
+                    flex-direction: column;
+                    justify-content: space-between;
+                    overflow: hidden;
+                }
+
+                .component-info-label {
+                    font-size: 0.80rem;
+                    font-weight: 700;
+                    color: #94a3b8;
+                    text-transform: uppercase;
+                    letter-spacing: 0.03em;
+                }
+
+                .component-info-value {
+                    font-size: 1.35rem;
+                    line-height: 1.2;
+                    font-weight: 700;
+                    color: #f8fafc;
+                    white-space: normal;
+                    overflow-wrap: anywhere;
+                }
+                </style>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            c1, c2, c3 = st.columns(3)
+
+            with c1:
+                st.markdown(
+                    f'<div class="component-info-card">'
+                    f'<div class="component-info-label">Status atual</div>'
+                    f'<div class="component-info-value">{status_atual}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            with c2:
+                st.markdown(
+                    f'<div class="component-info-card">'
+                    f'<div class="component-info-label">Máquina atual</div>'
+                    f'<div class="component-info-value">{maquina_atual}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            with c3:
+                st.markdown(
+                    f'<div class="component-info-card">'
+                    f'<div class="component-info-label">Localização atual</div>'
+                    f'<div class="component-info-value">{localizacao_atual}</div>'
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+
+            st.divider()
+            historico_df = get_component_location_history(int(componente["id"]))
+
+            historico_os_df = get_component_service_history(int(componente["id"]))
+            total_os = len(historico_os_df)
+
+            total_manutencoes = 0
+            total_movimentacoes = len(historico_df)
+
+            if not historico_os_df.empty:
+                total_manutencoes = (
+                    historico_os_df["acao"]
+                    .astype(str)
+                    .str.upper()
+                    .isin(
+                        [
+                            "MANUTENCAO",
+                            "INSPECAO",
+                        ]
+                    )
+                    .sum()
+                )
+
+            k1, k2, k3 = st.columns(3)
+
+            k1.metric(
+                "Ordens vinculadas",
+                int(total_os),
+            )
+
+            k2.metric(
+                "Manutenções / inspeções",
+                int(total_manutencoes),
+            )
+
+            k3.metric(
+                "Movimentações",
+                int(total_movimentacoes),
+            )
+
+            hist_tab1, hist_tab2, hist_tab3 = st.tabs(
+                [
+                    "Linha do tempo",
+                    "Ordens de Serviço",
+                    "Movimentações",
+                ]
+            )
+            with hist_tab3:
+
+                if historico_df.empty:
+                    st.info("Nenhuma movimentação registrada para este componente.")
+
+                else:
+                    historico_view = historico_df.copy()
+
+                    historico_view["created_at"] = pd.to_datetime(
+                        historico_view["created_at"],
+                        errors="coerce",
+                    ).dt.strftime("%d/%m/%Y %H:%M")
+
+                    historico_view = historico_view.rename(
+                        columns={
+                            "maquina_anterior": "Máquina anterior",
+                            "maquina_nova": "Máquina nova",
+                            "localizacao_anterior": "Local anterior",
+                            "localizacao_nova": "Local novo",
+                            "status_anterior": "Status anterior",
+                            "status_novo": "Status novo",
+                            "service_order_id": "OS",
+                            "motivo": "Motivo",
+                            "usuario": "Usuário",
+                            "created_at": "Data",
+                        }
+                    )
+
+                    st.dataframe(
+                        historico_view[
+                            [
+                                "Data",
+                                "Máquina anterior",
+                                "Máquina nova",
+                                "Local anterior",
+                                "Local novo",
+                                "Status anterior",
+                                "Status novo",
+                                "OS",
+                                "Motivo",
+                                "Usuário",
+                            ]
+                        ],
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+            with hist_tab2:
+
+                if historico_os_df.empty:
+                    st.info("Nenhuma Ordem de Serviço vinculada a este componente.")
+
+                else:
+                    os_view = historico_os_df.copy()
+
+                    os_view["start_datetime"] = pd.to_datetime(
+                        os_view["start_datetime"],
+                        errors="coerce",
+                    ).dt.strftime("%d/%m/%Y %H:%M")
+
+                    os_view["end_datetime"] = pd.to_datetime(
+                        os_view["end_datetime"],
+                        errors="coerce",
+                    ).dt.strftime("%d/%m/%Y %H:%M")
+
+                    os_view = os_view.rename(
+                        columns={
+                            "service_order_id": "OS",
+                            "acao": "Ação",
+                            "maquina_os": "Máquina",
+                            "tipo_manutencao": "Tipo manutenção",
+                            "start_datetime": "Abertura",
+                            "end_datetime": "Finalização",
+                            "ordem_status": "Status",
+                            "problem_description": "Problema",
+                            "solution_description": "Solução",
+                            "observacao": "Observação componente",
+                        }
+                    )
+
+            with hist_tab1:
+                eventos = []
+
+                # =====================================================
+                # EVENTOS DE ORDENS DE SERVIÇO
+                # =====================================================
+
+                if not historico_os_df.empty:
+
+                    for _, r in historico_os_df.iterrows():
+
+                        data_evento = pd.to_datetime(
+                            r["start_datetime"],
+                            errors="coerce",
+                        )
+
+                        eventos.append(
+                            {
+                                "data": data_evento,
+                                "tipo": "OS",
+                                "titulo": (
+                                    f"OS {int(r['service_order_id'])} " f"• {r['acao']}"
+                                ),
+                                "descricao": (
+                                    f"{r['maquina_os']} | "
+                                    f"{r['problem_description'] or ''}"
+                                ),
+                                "detalhe": (str(r["observacao"] or "")),
+                            }
+                        )
+
+                # =====================================================
+                # EVENTOS DE MOVIMENTAÇÃO
+                # =====================================================
+
+                if not historico_df.empty:
+
+                    for _, r in historico_df.iterrows():
+
+                        data_evento = pd.to_datetime(
+                            r["created_at"],
+                            errors="coerce",
+                        )
+
+                        origem = (
+                            str(r["maquina_anterior"])
+                            if not pd.isna(r["maquina_anterior"])
+                            else "Sem máquina"
+                        )
+
+                        destino = (
+                            str(r["maquina_nova"])
+                            if not pd.isna(r["maquina_nova"])
+                            else "Sem máquina"
+                        )
+
+                        eventos.append(
+                            {
+                                "data": data_evento,
+                                "tipo": "MOVIMENTAÇÃO",
+                                "titulo": (f"{origem} → {destino}"),
+                                "descricao": (
+                                    f"{r['status_anterior'] or '-'} "
+                                    f"→ {r['status_novo'] or '-'}"
+                                ),
+                                "detalhe": (str(r["motivo"] or "")),
+                            }
+                        )
+
+                if not eventos:
+                    st.info(
+                        "Ainda não existem eventos registrados para este componente."
+                    )
+
+                else:
+                    eventos = sorted(
+                        eventos,
+                        key=lambda x: (
+                            pd.Timestamp.min if pd.isna(x["data"]) else x["data"]
+                        ),
+                        reverse=True,
+                    )
+
+                    for evento in eventos:
+
+                        data_txt = (
+                            "-"
+                            if pd.isna(evento["data"])
+                            else evento["data"].strftime("%d/%m/%Y %H:%M")
+                        )
+
+                        titulo = str(evento["titulo"] or "")
+                        descricao = str(evento["descricao"] or "")
+                        detalhe = str(evento["detalhe"] or "")
+
+                        html_evento = (
+                            '<div style="'
+                            "border-left:3px solid #16c7c9;"
+                            "padding:16px 18px;"
+                            "margin-bottom:12px;"
+                            "background:#182230;"
+                            "border-radius:0 10px 10px 0;"
+                            '">'
+                            f'<div style="font-size:0.78rem;color:#94a3b8;margin-bottom:7px;">'
+                            f'{data_txt} • {evento["tipo"]}'
+                            "</div>"
+                            f'<div style="font-size:1.05rem;font-weight:700;color:#f8fafc;">'
+                            f"{titulo}"
+                            "</div>"
+                            f'<div style="margin-top:6px;color:#cbd5e1;">'
+                            f"{descricao}"
+                            "</div>"
+                            f'<div style="margin-top:6px;font-size:0.88rem;color:#94a3b8;">'
+                            f"{detalhe}"
+                            "</div>"
+                            "</div>"
+                        )
+
+                        st.markdown(
+                            html_evento,
+                            unsafe_allow_html=True,
+                        )
+        st.dataframe(
+            os_view[
+                [
+                    "OS",
+                    "Ação",
+                    "Máquina",
+                    "Tipo manutenção",
+                    "Abertura",
+                    "Finalização",
+                    "Status",
+                    "Problema",
+                    "Solução",
+                    "Observação componente",
+                ]
+            ],
+            use_container_width=True,
+            hide_index=True,
+        )
+
 elif menu == "Frota":
     st.subheader("Frota")
 
@@ -6998,7 +8271,7 @@ elif menu == "Frota":
             status_frota = frota_df["status"].astype(str).str.strip().str.upper()
 
             ativos = (status_frota == "ATIVO").sum()
-            manutencao = (status_frota == "MANUTENÇÃO").sum()
+            manutencao = (status_frota == "EM MANUTENÇÃO").sum()
             desativados = (status_frota == "DESATIVADO").sum()
 
         c1, c2, c3, c4 = st.columns(4)
@@ -7332,11 +8605,10 @@ elif menu == "Frota":
 
                 status_opts = [
                     "ATIVO",
-                    "MANUTENÇÃO",
                     "DESATIVADO",
                 ]
 
-                status_atual = str(row["status"])
+                status_atual = str(row["status_cadastro"])
 
                 status_edit = st.selectbox(
                     "Status",
@@ -7702,86 +8974,90 @@ elif menu == "Frota":
 
                             st.success("Ordem atualizada.")
                             st.rerun()
-            st.divider()
-            st.markdown("### Serviços de terceiros / Custos")
+                    st.divider()
+                    st.markdown("### Serviços de terceiros / Custos")
 
-            if servicos_fos_df.empty:
-                st.info("Nenhuma solicitação de serviço vinculada a esta ordem.")
+                    if servicos_fos_df.empty:
+                        st.info(
+                            "Nenhuma solicitação de serviço vinculada a esta ordem."
+                        )
 
-            else:
-                custo_total = (
-                    pd.to_numeric(
-                        servicos_fos_df["valor_total"],
-                        errors="coerce",
-                    )
-                    .fillna(0)
-                    .sum()
-                )
+                    else:
+                        custo_total = (
+                            pd.to_numeric(
+                                servicos_fos_df["valor_total"],
+                                errors="coerce",
+                            )
+                            .fillna(0)
+                            .sum()
+                        )
 
-                c1, c2 = st.columns(2)
+                        c1, c2 = st.columns(2)
 
-                c1.metric(
-                    "Solicitações vinculadas",
-                    int(len(servicos_fos_df)),
-                )
+                        c1.metric(
+                            "Solicitações vinculadas",
+                            int(len(servicos_fos_df)),
+                        )
 
-                c2.metric(
-                    "Custo total da OS",
-                    f"R$ {custo_total:,.2f}".replace(",", "X")
-                    .replace(".", ",")
-                    .replace("X", "."),
-                )
+                        c2.metric(
+                            "Custo total da OS",
+                            f"R$ {custo_total:,.2f}".replace(",", "X")
+                            .replace(".", ",")
+                            .replace("X", "."),
+                        )
 
-                tabela_custos = servicos_fos_df[
-                    [
-                        "solicitacao_numero",
-                        "solicitacao_descricao",
-                        "servico_numero",
-                        "fornecedor",
-                        "valor_total",
-                        "servico_status",
-                    ]
-                ].copy()
+                        tabela_custos = servicos_fos_df[
+                            [
+                                "solicitacao_numero",
+                                "solicitacao_descricao",
+                                "servico_numero",
+                                "fornecedor",
+                                "valor_total",
+                                "servico_status",
+                            ]
+                        ].copy()
 
-                tabela_custos["servico_numero"] = tabela_custos[
-                    "servico_numero"
-                ].fillna("Aguardando contratação")
+                        tabela_custos["servico_numero"] = tabela_custos[
+                            "servico_numero"
+                        ].fillna("Aguardando contratação")
 
-                tabela_custos["fornecedor"] = tabela_custos["fornecedor"].fillna("-")
+                        tabela_custos["fornecedor"] = tabela_custos[
+                            "fornecedor"
+                        ].fillna("-")
 
-                tabela_custos["servico_status"] = tabela_custos[
-                    "servico_status"
-                ].fillna("Aguardando contratação")
+                        tabela_custos["servico_status"] = tabela_custos[
+                            "servico_status"
+                        ].fillna("Aguardando contratação")
 
-                tabela_custos["valor_total"] = (
-                    pd.to_numeric(
-                        tabela_custos["valor_total"],
-                        errors="coerce",
-                    )
-                    .fillna(0)
-                    .apply(
-                        lambda valor: f"R$ {valor:,.2f}".replace(",", "X")
-                        .replace(".", ",")
-                        .replace("X", ".")
-                    )
-                )
+                        tabela_custos["valor_total"] = (
+                            pd.to_numeric(
+                                tabela_custos["valor_total"],
+                                errors="coerce",
+                            )
+                            .fillna(0)
+                            .apply(
+                                lambda valor: f"R$ {valor:,.2f}".replace(",", "X")
+                                .replace(".", ",")
+                                .replace("X", ".")
+                            )
+                        )
 
-                tabela_custos = tabela_custos.rename(
-                    columns={
-                        "solicitacao_numero": "Solicitação",
-                        "solicitacao_descricao": "Descrição",
-                        "servico_numero": "Serviço",
-                        "fornecedor": "Fornecedor",
-                        "valor_total": "Valor",
-                        "servico_status": "Status",
-                    }
-                )
+                        tabela_custos = tabela_custos.rename(
+                            columns={
+                                "solicitacao_numero": "Solicitação",
+                                "solicitacao_descricao": "Descrição",
+                                "servico_numero": "Serviço",
+                                "fornecedor": "Fornecedor",
+                                "valor_total": "Valor",
+                                "servico_status": "Status",
+                            }
+                        )
 
-                st.dataframe(
-                    tabela_custos,
-                    use_container_width=True,
-                    hide_index=True,
-                )
+                        st.dataframe(
+                            tabela_custos,
+                            use_container_width=True,
+                            hide_index=True,
+                        )
         # =====================================================
         # HISTÓRICO
         # =====================================================
@@ -9218,6 +10494,514 @@ def order_page(tipo, titulo):
                     ):
                         delete_part_from_order(part_del_map[part_del], user["usuario"])
                         st.success("Peça removida e estoque devolvido.")
+                        st.rerun()
+        # =====================================================
+        # COMPONENTES VINCULADOS À ORDEM
+        # =====================================================
+
+        st.markdown("---")
+        st.markdown("### ⚙️ Componentes vinculados à Ordem")
+
+        # Componentes atualmente instalados na máquina da OS
+        componentes_maquina_df = fetch_df(
+            """
+            SELECT
+                id,
+                codigo,
+                tipo,
+                descricao,
+                fabricante,
+                modelo,
+                localizacao,
+                status
+            FROM machine_components
+            WHERE machine_id = :machine_id
+            ORDER BY tipo, codigo
+            """,
+            {"machine_id": int(row["machine_id"])},
+        )
+
+        # Componentes que já estão vinculados a esta OS
+        componentes_os_df = get_service_order_components(order_id_atual)
+
+        # =====================================================
+        # ADICIONAR COMPONENTE À OS
+        # =====================================================
+
+        if componentes_maquina_df.empty:
+            st.info(
+                "Esta máquina não possui motores, redutores ou "
+                "periféricos cadastrados."
+            )
+
+        else:
+            componentes_ja_vinculados = set()
+
+            if not componentes_os_df.empty:
+                componentes_ja_vinculados = set(
+                    componentes_os_df["component_id"].astype(int).tolist()
+                )
+
+            componentes_disponiveis = componentes_maquina_df[
+                ~componentes_maquina_df["id"]
+                .astype(int)
+                .isin(componentes_ja_vinculados)
+            ].copy()
+
+            if componentes_disponiveis.empty:
+                st.info(
+                    "Todos os componentes desta máquina já estão " "vinculados à ordem."
+                )
+
+            else:
+                component_map = {
+                    (f"{r['codigo']} | " f"{r['tipo']} | " f"{r['descricao']}"): int(
+                        r["id"]
+                    )
+                    for _, r in componentes_disponiveis.iterrows()
+                }
+
+                with st.form(
+                    f"componente_ordem_{tipo}_{order_id_atual}",
+                    clear_on_submit=True,
+                ):
+                    componente_label = st.selectbox(
+                        "Componente",
+                        list(component_map.keys()),
+                    )
+
+                    acao_componente = st.selectbox(
+                        "Ação realizada",
+                        [
+                            "MANUTENCAO",
+                            "INSPECAO",
+                        ],
+                    )
+
+                    observacao_componente = st.text_area(
+                        "Observação do componente",
+                        placeholder=(
+                            "Ex.: verificado rolamento, "
+                            "realizado reaperto dos terminais..."
+                        ),
+                    )
+
+                    adicionar_componente = st.form_submit_button(
+                        "Vincular componente à OS",
+                        use_container_width=True,
+                    )
+
+                if adicionar_componente:
+                    try:
+                        add_service_order_component(
+                            order_id=order_id_atual,
+                            component_id=component_map[componente_label],
+                            acao=acao_componente,
+                            observacao=observacao_componente,
+                        )
+
+                        st.success("Componente vinculado à ordem.")
+                        st.rerun()
+
+                    except Exception as e:
+                        if "Duplicate entry" in str(e):
+                            st.warning(
+                                "Este componente já está vinculado " "a esta ordem."
+                            )
+                        else:
+                            raise
+        # =====================================================
+        # TROCA / MOVIMENTAÇÃO DE COMPONENTES
+        # =====================================================
+
+        st.markdown("#### 🔄 Movimentação / substituição")
+
+        tipo_movimentacao = st.radio(
+            "Operação",
+            [
+                "Nenhuma",
+                "Retirar componente",
+                "Instalar componente",
+                "Substituir componente",
+            ],
+            horizontal=True,
+            key=f"mov_comp_{tipo}_{order_id_atual}",
+        )
+
+        machine_id_os = int(row["machine_id"])
+
+        # =====================================================
+        # RETIRAR COMPONENTE
+        # =====================================================
+
+        if tipo_movimentacao == "Retirar componente":
+
+            instalados_df = fetch_df(
+                """
+                SELECT
+                    id,
+                    codigo,
+                    tipo,
+                    descricao,
+                    fabricante,
+                    modelo,
+                    localizacao
+                FROM machine_components
+                WHERE machine_id=:machine_id
+                AND UPPER(status)='ATIVO'
+                ORDER BY tipo, codigo
+                """,
+                {"machine_id": machine_id_os},
+            )
+
+            if instalados_df.empty:
+
+                st.info("Não existem componentes ativos instalados " "nesta máquina.")
+
+            else:
+
+                retirar_map = {
+                    (
+                        f"{r['codigo']} | "
+                        f"{r['tipo']} | "
+                        f"{r['descricao']} | "
+                        f"{r['localizacao'] or '-'}"
+                    ): int(r["id"])
+                    for _, r in instalados_df.iterrows()
+                }
+
+                with st.form(f"retirar_comp_{tipo}_{order_id_atual}"):
+
+                    retirar_label = st.selectbox(
+                        "Componente a retirar",
+                        list(retirar_map.keys()),
+                    )
+
+                    destino_retirada = st.text_input(
+                        "Destino / localização após retirada",
+                        value="Oficina de manutenção",
+                    )
+
+                    status_retirada = st.selectbox(
+                        "Status após retirada",
+                        [
+                            "RESERVA",
+                            "MANUTENCAO",
+                            "DESATIVADO",
+                        ],
+                        index=1,
+                    )
+
+                    obs_retirada = st.text_area(
+                        "Motivo / observação",
+                        placeholder=("Ex.: retirado para troca de rolamentos..."),
+                    )
+
+                    confirmar_retirada = st.form_submit_button(
+                        "Confirmar retirada",
+                        use_container_width=True,
+                    )
+
+                if confirmar_retirada:
+
+                    retirar_componente_da_maquina(
+                        component_id=retirar_map[retirar_label],
+                        order_id=order_id_atual,
+                        destino_localizacao=destino_retirada.strip(),
+                        status_destino=status_retirada,
+                        observacao=obs_retirada.strip(),
+                    )
+
+                    st.success("Componente retirado e histórico atualizado.")
+
+                    st.rerun()
+
+        # =====================================================
+        # INSTALAR COMPONENTE
+        # =====================================================
+
+        elif tipo_movimentacao == "Instalar componente":
+
+            disponiveis_df = fetch_df("""
+                SELECT
+                    id,
+                    codigo,
+                    tipo,
+                    descricao,
+                    fabricante,
+                    modelo,
+                    localizacao,
+                    status
+                FROM machine_components
+                WHERE machine_id IS NULL
+                AND UPPER(status) <> 'DESATIVADO'
+                ORDER BY tipo, codigo
+                """)
+
+            if disponiveis_df.empty:
+
+                st.info("Não existem componentes disponíveis " "para instalação.")
+
+            else:
+
+                instalar_map = {
+                    (
+                        f"{r['codigo']} | "
+                        f"{r['tipo']} | "
+                        f"{r['descricao']} | "
+                        f"{r['status']} | "
+                        f"{r['localizacao'] or '-'}"
+                    ): int(r["id"])
+                    for _, r in disponiveis_df.iterrows()
+                }
+
+                with st.form(f"instalar_comp_{tipo}_{order_id_atual}"):
+
+                    instalar_label = st.selectbox(
+                        "Componente a instalar",
+                        list(instalar_map.keys()),
+                    )
+
+                    local_instalacao = st.text_input(
+                        "Localização na máquina",
+                        placeholder=(
+                            "Ex.: acionamento principal, " "rosca de saída..."
+                        ),
+                    )
+
+                    obs_instalacao = st.text_area(
+                        "Observação",
+                        placeholder=("Ex.: instalado após revisão geral..."),
+                    )
+
+                    confirmar_instalacao = st.form_submit_button(
+                        "Confirmar instalação",
+                        use_container_width=True,
+                    )
+
+                if confirmar_instalacao:
+
+                    if not local_instalacao.strip():
+
+                        st.error("Informe a localização do componente " "na máquina.")
+
+                    else:
+
+                        instalar_componente_na_maquina(
+                            component_id=instalar_map[instalar_label],
+                            order_id=order_id_atual,
+                            machine_id=machine_id_os,
+                            nova_localizacao=local_instalacao.strip(),
+                            observacao=obs_instalacao.strip(),
+                        )
+
+                        st.success("Componente instalado e histórico atualizado.")
+
+                        st.rerun()
+
+        # =====================================================
+        # SUBSTITUIR COMPONENTE
+        # =====================================================
+
+        elif tipo_movimentacao == "Substituir componente":
+
+            instalados_df = fetch_df(
+                """
+                SELECT
+                    id,
+                    codigo,
+                    tipo,
+                    descricao,
+                    localizacao
+                FROM machine_components
+                WHERE machine_id=:machine_id
+                AND UPPER(status)='ATIVO'
+                ORDER BY tipo, codigo
+                """,
+                {"machine_id": machine_id_os},
+            )
+
+            disponiveis_df = fetch_df("""
+                SELECT
+                    id,
+                    codigo,
+                    tipo,
+                    descricao,
+                    localizacao,
+                    status
+                FROM machine_components
+                WHERE machine_id IS NULL
+                AND UPPER(status) <> 'DESATIVADO'
+                ORDER BY tipo, codigo
+                """)
+
+            if instalados_df.empty:
+
+                st.warning(
+                    "Esta máquina não possui componente ativo " "para ser substituído."
+                )
+
+            elif disponiveis_df.empty:
+
+                st.warning(
+                    "Não existem componentes disponíveis "
+                    "para substituir o componente atual."
+                )
+
+            else:
+
+                retirar_map = {
+                    (f"{r['codigo']} | " f"{r['tipo']} | " f"{r['descricao']}"): int(
+                        r["id"]
+                    )
+                    for _, r in instalados_df.iterrows()
+                }
+
+                instalar_map = {
+                    (
+                        f"{r['codigo']} | "
+                        f"{r['tipo']} | "
+                        f"{r['descricao']} | "
+                        f"{r['status']}"
+                    ): int(r["id"])
+                    for _, r in disponiveis_df.iterrows()
+                }
+
+                with st.form(f"substituir_comp_{tipo}_{order_id_atual}"):
+
+                    st.markdown("##### Componente que sairá")
+
+                    retirar_label = st.selectbox(
+                        "Componente instalado",
+                        list(retirar_map.keys()),
+                    )
+
+                    componente_saida_id = retirar_map[retirar_label]
+
+                    saida_row = instalados_df[
+                        instalados_df["id"].astype(int) == componente_saida_id
+                    ].iloc[0]
+
+                    local_atual = str(saida_row["localizacao"] or "")
+
+                    st.caption(f"Localização atual: " f"{local_atual or '-'}")
+
+                    destino_saida = st.text_input(
+                        "Destino do componente retirado",
+                        value="Oficina de manutenção",
+                    )
+
+                    status_saida = st.selectbox(
+                        "Status do componente retirado",
+                        [
+                            "MANUTENCAO",
+                            "RESERVA",
+                            "DESATIVADO",
+                        ],
+                    )
+
+                    st.markdown("##### Componente que entrará")
+
+                    instalar_label = st.selectbox(
+                        "Componente substituto",
+                        list(instalar_map.keys()),
+                    )
+
+                    local_entrada = st.text_input(
+                        "Localização do novo componente",
+                        value=local_atual,
+                    )
+
+                    observacao_troca = st.text_area(
+                        "Motivo / observação da substituição",
+                        placeholder=(
+                            "Ex.: motor retirado por falha de "
+                            "rolamento e substituído pelo reserva."
+                        ),
+                    )
+
+                    confirmar_troca = st.form_submit_button(
+                        "Executar substituição",
+                        use_container_width=True,
+                    )
+
+                if confirmar_troca:
+
+                    if not local_entrada.strip():
+                        st.error(
+                            "Informe a localização do componente " "que será instalado."
+                        )
+
+                    else:
+                        try:
+                            substituir_componente_na_ordem(
+                                order_id=order_id_atual,
+                                machine_id=machine_id_os,
+                                component_id_saida=retirar_map[retirar_label],
+                                component_id_entrada=instalar_map[instalar_label],
+                                destino_saida=destino_saida.strip(),
+                                status_saida=status_saida,
+                                local_entrada=local_entrada.strip(),
+                                observacao=observacao_troca.strip(),
+                            )
+
+                            st.success(
+                                "Substituição realizada com sucesso. "
+                                "O componente antigo foi retirado, "
+                                "o substituto foi instalado e os "
+                                "históricos foram atualizados."
+                            )
+
+                            st.rerun()
+
+                        except Exception as e:
+                            st.error(f"Não foi possível realizar a substituição: {e}")
+        # =====================================================
+        # COMPONENTES JÁ VINCULADOS À OS
+        # =====================================================
+
+        componentes_os_df = get_service_order_components(order_id_atual)
+
+        if componentes_os_df.empty:
+            st.caption("Nenhum componente vinculado a esta ordem.")
+
+        else:
+            st.markdown("#### Componentes desta OS")
+
+            for _, comp in componentes_os_df.iterrows():
+
+                titulo = (
+                    f"{comp['codigo']} | " f"{comp['tipo']} | " f"{comp['descricao']}"
+                )
+
+                with st.expander(titulo):
+
+                    c1, c2, c3 = st.columns(3)
+
+                    c1.markdown(f"**Ação:** {comp['acao']}")
+
+                    c2.markdown(f"**Status:** {comp['status']}")
+
+                    c3.markdown(f"**Local:** " f"{comp['localizacao'] or '-'}")
+
+                    if comp["fabricante"]:
+                        st.markdown(f"**Fabricante:** " f"{comp['fabricante']}")
+
+                    if comp["modelo"]:
+                        st.markdown(f"**Modelo:** {comp['modelo']}")
+
+                    if comp["observacao"]:
+                        st.markdown(f"**Observação:** " f"{comp['observacao']}")
+
+                    remover = st.button(
+                        "Remover componente da OS",
+                        key=(f"remover_comp_os_" f"{int(comp['id'])}"),
+                    )
+
+                    if remover:
+                        remove_service_order_component(int(comp["id"]))
+
+                        st.success("Componente removido da ordem.")
                         st.rerun()
 
     with tabs[3]:
