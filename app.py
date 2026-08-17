@@ -83,6 +83,7 @@ TIPOS_MANUTENCAO = [
     "Rotina",
     "Rotina Preventiva",
     "Qualidade",
+    "Preventiva",
 ]
 
 
@@ -376,13 +377,50 @@ def init_db():
         """CREATE TABLE IF NOT EXISTS products (id INT AUTO_INCREMENT PRIMARY KEY,codigo VARCHAR(80) NULL UNIQUE,nome VARCHAR(150) NOT NULL,descricao TEXT,unidade VARCHAR(20) NOT NULL DEFAULT 'UN',estoque_atual DECIMAL(18,3) NOT NULL DEFAULT 0,estoque_minimo DECIMAL(18,3) NOT NULL DEFAULT 0,
             valor_unitario DECIMAL(18,4) NOT NULL DEFAULT 0,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS movements (id INT AUTO_INCREMENT PRIMARY KEY,produto_id INT NOT NULL,tipo VARCHAR(30) NOT NULL,quantidade DECIMAL(18,3) NOT NULL,observacao TEXT,usuario_lancamento VARCHAR(150),criado_em DATETIME NOT NULL,CONSTRAINT fk_movements_product FOREIGN KEY (produto_id) REFERENCES products(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
-        """CREATE TABLE IF NOT EXISTS machines (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,status VARCHAR(50) NOT NULL DEFAULT 'Ativa',criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS machines (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,status VARCHAR(50) NOT NULL DEFAULT 'Ativa',preventiva_periodicidade_dias INT NULL,criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS problem_locations ( id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL, descricao TEXT,ativo TINYINT(1) NOT NULL DEFAULT 1,created_at DATETIME NOT NULL,updated_at DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS employees (id INT AUTO_INCREMENT PRIMARY KEY,nome VARCHAR(150) NOT NULL,setor VARCHAR(100),funcao VARCHAR(100),criado_em DATETIME NOT NULL,atualizado_em DATETIME NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
-        """CREATE TABLE IF NOT EXISTS service_orders (id INT AUTO_INCREMENT PRIMARY KEY,tipo VARCHAR(20) NOT NULL,opened_by VARCHAR(150) NOT NULL,machine_id INT NOT NULL,start_datetime DATETIME NOT NULL,end_datetime DATETIME NULL,problem_description TEXT,status VARCHAR(50) NOT NULL DEFAULT 'Aberta',solution_description TEXT,created_at DATETIME NOT NULL,updated_at DATETIME NULL,CONSTRAINT fk_so_machine FOREIGN KEY (machine_id) REFERENCES machines(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS service_orders (id INT AUTO_INCREMENT PRIMARY KEY,tipo VARCHAR(20) NOT NULL,opened_by VARCHAR(150) NOT NULL,machine_id INT NOT NULL,start_datetime DATETIME NOT NULL,end_datetime DATETIME NULL,problem_description TEXT,status VARCHAR(50) NOT NULL DEFAULT 'Aberta',solution_description TEXT,preventiva_origem_id INT NULL,preventiva_gerou_proxima TINYINT(1) NOT NULL DEFAULT 0,created_at DATETIME NOT NULL,updated_at DATETIME NULL,CONSTRAINT fk_so_machine FOREIGN KEY (machine_id) REFERENCES machines(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS service_order_employees (id INT AUTO_INCREMENT PRIMARY KEY,order_id INT NOT NULL,employee_id INT NOT NULL,start_datetime DATETIME NOT NULL,end_datetime DATETIME NULL,created_at DATETIME NOT NULL,CONSTRAINT fk_soe_order FOREIGN KEY (order_id) REFERENCES service_orders(id),CONSTRAINT fk_soe_employee FOREIGN KEY (employee_id) REFERENCES employees(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS audit_logs (id INT AUTO_INCREMENT PRIMARY KEY,usuario VARCHAR(150) NOT NULL, acao VARCHAR(150) NOT NULL,entidade VARCHAR(100),entidade_id VARCHAR(100),detalhes TEXT,criado_em DATETIME NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS service_order_parts (id INT AUTO_INCREMENT PRIMARY KEY,order_id INT NOT NULL,product_id INT NOT NULL,quantidade DECIMAL(18,3) NOT NULL,created_at DATETIME NOT NULL,CONSTRAINT fk_sop_order FOREIGN KEY (order_id) REFERENCES service_orders(id),CONSTRAINT fk_sop_product FOREIGN KEY (product_id) REFERENCES products(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS fleet_assets (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            codigo VARCHAR(50) NOT NULL UNIQUE,
+            tipo VARCHAR(30) NOT NULL,
+            descricao VARCHAR(200) NOT NULL,
+            marca VARCHAR(100) NULL,
+            modelo VARCHAR(100) NULL,
+            ano INT NULL,
+            placa VARCHAR(20) NULL,
+            patrimonio VARCHAR(50) NULL,
+            tipo_medidor VARCHAR(20) NULL,
+            leitura_atual DECIMAL(12,2) NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'ATIVO',
+            observacao TEXT NULL,
+            criado_em DATETIME NOT NULL,
+            atualizado_em DATETIME NULL
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
+        """CREATE TABLE IF NOT EXISTS machine_components (
+            id INT AUTO_INCREMENT PRIMARY KEY,
+            codigo VARCHAR(50) NOT NULL UNIQUE,
+            tipo VARCHAR(30) NOT NULL,
+            descricao VARCHAR(200) NOT NULL,
+            fabricante VARCHAR(100) NULL,
+            modelo VARCHAR(100) NULL,
+            potencia DECIMAL(10,2) NULL,
+            unidade_potencia VARCHAR(10) NULL,
+            tensao VARCHAR(30) NULL,
+            machine_id INT NULL,
+            localizacao VARCHAR(200) NULL,
+            status VARCHAR(30) NOT NULL DEFAULT 'ATIVO',
+            observacao TEXT NULL,
+            criado_em DATETIME NOT NULL,
+            atualizado_em DATETIME NULL,
+            CONSTRAINT fk_component_machine
+                FOREIGN KEY (machine_id)
+                REFERENCES machines(id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS pmoc_maquinas (
             id INT AUTO_INCREMENT PRIMARY KEY,
             codigo VARCHAR(30) NOT NULL UNIQUE,
@@ -548,6 +586,9 @@ def init_db():
             "ALTER TABLE service_orders ADD COLUMN gera_parada TINYINT(1) NOT NULL DEFAULT 1",
             "ALTER TABLE service_orders ADD COLUMN tipo_manutencao VARCHAR(50) DEFAULT 'Corretiva'",
             "ALTER TABLE service_orders ADD COLUMN problem_location_id INT NULL",
+            "ALTER TABLE machines ADD COLUMN preventiva_periodicidade_dias INT NULL",
+            "ALTER TABLE service_orders ADD COLUMN preventiva_origem_id INT NULL",
+            "ALTER TABLE service_orders ADD COLUMN preventiva_gerou_proxima TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE pmoc_maquinas ADD COLUMN periodicidade_dias INT NOT NULL DEFAULT 90",
             "ALTER TABLE pmoc_preventivas ADD COLUMN gerou_proxima TINYINT(1) NOT NULL DEFAULT 0",
             "ALTER TABLE pmoc_preventivas ADD COLUMN preventiva_origem_id INT NULL",
@@ -1044,33 +1085,72 @@ def get_critical_products():
 
 
 def get_machines():
-    return fetch_df(
-        "SELECT id,nome,status,criado_em,atualizado_em FROM machines ORDER BY nome"
-    )
+    return fetch_df("""
+        SELECT
+            id,
+            nome,
+            status,
+            preventiva_periodicidade_dias,
+            criado_em,
+            atualizado_em
+        FROM machines
+        ORDER BY nome
+        """)
 
 
-def create_machine(nome, status):
+def create_machine(nome, status, preventiva_periodicidade_dias=None):
     execute(
-        "INSERT INTO machines (nome,status,criado_em,atualizado_em) VALUES (:nome,:status,:criado_em,:atualizado_em)",
+        """
+        INSERT INTO machines (
+            nome,
+            status,
+            preventiva_periodicidade_dias,
+            criado_em,
+            atualizado_em
+        )
+        VALUES (
+            :nome,
+            :status,
+            :preventiva_periodicidade_dias,
+            :criado_em,
+            :atualizado_em
+        )
+        """,
         {
             "nome": nome.strip(),
             "status": status,
+            "preventiva_periodicidade_dias": preventiva_periodicidade_dias,
             "criado_em": now_br(),
             "atualizado_em": now_br(),
         },
     )
 
 
-def update_machine(machine_id, nome, status):
+def update_machine(
+    machine_id,
+    nome,
+    status,
+    preventiva_periodicidade_dias=None,
+):
     execute(
-        "UPDATE machines SET nome=:nome,status=:status,atualizado_em=:agora WHERE id=:id",
+        """
+        UPDATE machines
+        SET
+            nome=:nome,
+            status=:status,
+            preventiva_periodicidade_dias=:preventiva_periodicidade_dias,
+            atualizado_em=:agora
+        WHERE id=:id
+        """,
         {
             "id": machine_id,
             "nome": nome.strip(),
             "status": status,
+            "preventiva_periodicidade_dias": preventiva_periodicidade_dias,
             "agora": now_br(),
         },
     )
+
     log_action(
         st.session_state.get("user", {}).get("usuario", "sistema"),
         "Atualizou máquina",
@@ -1090,6 +1170,325 @@ def delete_machine_record(machine_id):
             "Esta máquina possui ordens vinculadas e não pode ser excluída."
         )
     execute("DELETE FROM machines WHERE id = :id", {"id": int(machine_id)})
+
+
+# ============================================================
+# COMPONETNES DE MÁQUINAS
+# ============================================================
+def get_machine_components():
+    return fetch_df("""
+        SELECT
+            mc.id,
+            mc.codigo,
+            mc.tipo,
+            mc.descricao,
+            mc.fabricante,
+            mc.modelo,
+            mc.potencia,
+            mc.unidade_potencia,
+            mc.tensao,
+            mc.machine_id,
+            m.nome AS maquina,
+            mc.localizacao,
+            mc.status,
+            mc.observacao,
+            mc.criado_em,
+            mc.atualizado_em
+        FROM machine_components mc
+        LEFT JOIN machines m
+            ON m.id = mc.machine_id
+        ORDER BY mc.tipo, mc.codigo
+        """)
+
+
+def create_machine_component(
+    codigo,
+    tipo,
+    descricao,
+    fabricante,
+    modelo,
+    potencia,
+    unidade_potencia,
+    tensao,
+    machine_id,
+    localizacao,
+    status,
+    observacao,
+):
+    execute(
+        """
+        INSERT INTO machine_components (
+            codigo,
+            tipo,
+            descricao,
+            fabricante,
+            modelo,
+            potencia,
+            unidade_potencia,
+            tensao,
+            machine_id,
+            localizacao,
+            status,
+            observacao,
+            criado_em,
+            atualizado_em
+        )
+        VALUES (
+            :codigo,
+            :tipo,
+            :descricao,
+            :fabricante,
+            :modelo,
+            :potencia,
+            :unidade_potencia,
+            :tensao,
+            :machine_id,
+            :localizacao,
+            :status,
+            :observacao,
+            :criado_em,
+            :atualizado_em
+        )
+        """,
+        {
+            "codigo": codigo.strip(),
+            "tipo": tipo,
+            "descricao": descricao.strip(),
+            "fabricante": fabricante.strip() or None,
+            "modelo": modelo.strip() or None,
+            "potencia": potencia,
+            "unidade_potencia": unidade_potencia,
+            "tensao": tensao.strip() or None,
+            "machine_id": machine_id,
+            "localizacao": localizacao.strip() or None,
+            "status": status,
+            "observacao": observacao.strip() or None,
+            "criado_em": now_br(),
+            "atualizado_em": now_br(),
+        },
+    )
+
+
+def update_machine_component(
+    component_id,
+    codigo,
+    tipo,
+    descricao,
+    fabricante,
+    modelo,
+    potencia,
+    unidade_potencia,
+    tensao,
+    machine_id,
+    localizacao,
+    status,
+    observacao,
+):
+    execute(
+        """
+        UPDATE machine_components
+        SET
+            codigo=:codigo,
+            tipo=:tipo,
+            descricao=:descricao,
+            fabricante=:fabricante,
+            modelo=:modelo,
+            potencia=:potencia,
+            unidade_potencia=:unidade_potencia,
+            tensao=:tensao,
+            machine_id=:machine_id,
+            localizacao=:localizacao,
+            status=:status,
+            observacao=:observacao,
+            atualizado_em=:atualizado_em
+        WHERE id=:id
+        """,
+        {
+            "id": component_id,
+            "codigo": codigo.strip(),
+            "tipo": tipo,
+            "descricao": descricao.strip(),
+            "fabricante": fabricante.strip() or None,
+            "modelo": modelo.strip() or None,
+            "potencia": potencia,
+            "unidade_potencia": unidade_potencia,
+            "tensao": tensao.strip() or None,
+            "machine_id": machine_id,
+            "localizacao": localizacao.strip() or None,
+            "status": status,
+            "observacao": observacao.strip() or None,
+            "atualizado_em": now_br(),
+        },
+    )
+
+
+def delete_machine_component(component_id):
+    execute(
+        """
+        DELETE FROM machine_components
+        WHERE id=:id
+        """,
+        {"id": component_id},
+    )
+
+
+# ============================================================
+# FROTAS
+# ============================================================
+def get_fleet_assets():
+    return fetch_df("""
+        SELECT
+            id,
+            codigo,
+            tipo,
+            descricao,
+            marca,
+            modelo,
+            ano,
+            placa,
+            patrimonio,
+            tipo_medidor,
+            leitura_atual,
+            status,
+            observacao,
+            criado_em,
+            atualizado_em
+        FROM fleet_assets
+        ORDER BY tipo, codigo
+        """)
+
+
+def create_fleet_asset(
+    codigo,
+    tipo,
+    descricao,
+    marca,
+    modelo,
+    ano,
+    placa,
+    patrimonio,
+    tipo_medidor,
+    leitura_atual,
+    status,
+    observacao,
+):
+    execute(
+        """
+        INSERT INTO fleet_assets (
+            codigo,
+            tipo,
+            descricao,
+            marca,
+            modelo,
+            ano,
+            placa,
+            patrimonio,
+            tipo_medidor,
+            leitura_atual,
+            status,
+            observacao,
+            criado_em,
+            atualizado_em
+        )
+        VALUES (
+            :codigo,
+            :tipo,
+            :descricao,
+            :marca,
+            :modelo,
+            :ano,
+            :placa,
+            :patrimonio,
+            :tipo_medidor,
+            :leitura_atual,
+            :status,
+            :observacao,
+            :criado_em,
+            :atualizado_em
+        )
+        """,
+        {
+            "codigo": codigo.strip(),
+            "tipo": tipo,
+            "descricao": descricao.strip(),
+            "marca": marca.strip() or None,
+            "modelo": modelo.strip() or None,
+            "ano": ano,
+            "placa": placa.strip().upper() or None,
+            "patrimonio": patrimonio.strip() or None,
+            "tipo_medidor": tipo_medidor,
+            "leitura_atual": leitura_atual,
+            "status": status,
+            "observacao": observacao.strip() or None,
+            "criado_em": now_br(),
+            "atualizado_em": now_br(),
+        },
+    )
+
+
+def update_fleet_asset(
+    asset_id,
+    codigo,
+    tipo,
+    descricao,
+    marca,
+    modelo,
+    ano,
+    placa,
+    patrimonio,
+    tipo_medidor,
+    leitura_atual,
+    status,
+    observacao,
+):
+    execute(
+        """
+        UPDATE fleet_assets
+        SET
+            codigo=:codigo,
+            tipo=:tipo,
+            descricao=:descricao,
+            marca=:marca,
+            modelo=:modelo,
+            ano=:ano,
+            placa=:placa,
+            patrimonio=:patrimonio,
+            tipo_medidor=:tipo_medidor,
+            leitura_atual=:leitura_atual,
+            status=:status,
+            observacao=:observacao,
+            atualizado_em=:atualizado_em
+        WHERE id=:id
+        """,
+        {
+            "id": asset_id,
+            "codigo": codigo.strip(),
+            "tipo": tipo,
+            "descricao": descricao.strip(),
+            "marca": marca.strip() or None,
+            "modelo": modelo.strip() or None,
+            "ano": ano,
+            "placa": placa.strip().upper() or None,
+            "patrimonio": patrimonio.strip() or None,
+            "tipo_medidor": tipo_medidor,
+            "leitura_atual": leitura_atual,
+            "status": status,
+            "observacao": observacao.strip() or None,
+            "atualizado_em": now_br(),
+        },
+    )
+
+
+def delete_fleet_asset(asset_id):
+    execute(
+        """
+        DELETE FROM fleet_assets
+        WHERE id=:id
+        """,
+        {
+            "id": asset_id,
+        },
+    )
 
 
 # ============================================================
@@ -3419,9 +3818,149 @@ def update_order(
     )
 
 
+def gerar_proxima_preventiva(order_id, end_dt):
+    ordem_df = fetch_df(
+        """
+        SELECT
+            so.id,
+            so.machine_id,
+            so.preventiva_gerou_proxima,
+            so.problem_description,
+            so.centro_custo_id,
+            so.problem_location_id,
+            m.preventiva_periodicidade_dias
+        FROM service_orders so
+        INNER JOIN machines m
+            ON m.id = so.machine_id
+        WHERE so.id = :id
+        LIMIT 1
+        """,
+        {"id": order_id},
+    )
+
+    if ordem_df.empty:
+        return
+
+    ordem = ordem_df.iloc[0]
+
+    # Impede geração duplicada
+    gerou_proxima = int(ordem["preventiva_gerou_proxima"] or 0)
+
+    if gerou_proxima == 1:
+        return
+
+    periodicidade = ordem["preventiva_periodicidade_dias"]
+
+    if pd.isna(periodicidade):
+        return
+
+    periodicidade = int(periodicidade)
+
+    if periodicidade <= 0:
+        return
+
+    # Sempre a partir da data real de execução
+    proxima_data = end_dt + timedelta(days=periodicidade)
+
+    usuario = st.session_state.get("user", {}).get(
+        "usuario",
+        "sistema",
+    )
+
+    execute(
+        """
+        INSERT INTO service_orders (
+            tipo,
+            opened_by,
+            machine_id,
+            start_datetime,
+            problem_description,
+            gera_parada,
+            status,
+            centro_custo_id,
+            problem_location_id,
+            tipo_manutencao,
+            created_at,
+            updated_at,
+            preventiva_origem_id,
+            preventiva_gerou_proxima
+        )
+        VALUES (
+            'PREVENTIVA',
+            :opened_by,
+            :machine_id,
+            :start_datetime,
+            :problem_description,
+            0,
+            'Aberta',
+            :centro_custo_id,
+            :problem_location_id,
+            'Preventiva',
+            :created_at,
+            :updated_at,
+            :preventiva_origem_id,
+            0
+        )
+        """,
+        {
+            "opened_by": usuario,
+            "machine_id": int(ordem["machine_id"]),
+            "start_datetime": proxima_data,
+            "problem_description": (
+                str(ordem["problem_description"])
+                if not pd.isna(ordem["problem_description"])
+                else "Manutenção preventiva programada"
+            ),
+            "centro_custo_id": (
+                None
+                if pd.isna(ordem["centro_custo_id"])
+                else int(ordem["centro_custo_id"])
+            ),
+            "problem_location_id": (
+                None
+                if pd.isna(ordem["problem_location_id"])
+                else int(ordem["problem_location_id"])
+            ),
+            "created_at": now_br(),
+            "updated_at": now_br(),
+            "preventiva_origem_id": int(order_id),
+        },
+    )
+
+    execute(
+        """
+        UPDATE service_orders
+        SET
+            preventiva_gerou_proxima = 1,
+            updated_at = :updated_at
+        WHERE id = :id
+        """,
+        {
+            "id": order_id,
+            "updated_at": now_br(),
+        },
+    )
+
+    log_action(
+        usuario,
+        "Gerou próxima preventiva",
+        "service_orders",
+        order_id,
+        f"Periodicidade: {periodicidade} dias | Próxima: {proxima_data}",
+    )
+
+
 def close_order(order_id, solution_description, end_dt):
     execute(
-        "UPDATE service_orders SET status='Finalizada',solution_description=:solution_description,end_datetime=:end_datetime,updated_at=:updated_at WHERE id=:id",
+        """
+        UPDATE service_orders
+        SET
+            status='Finalizada',
+            solution_description=:solution_description,
+            end_datetime=:end_datetime,
+            updated_at=:updated_at
+        WHERE id=:id
+        """,
         {
             "id": order_id,
             "solution_description": solution_description.strip(),
@@ -3429,6 +3968,7 @@ def close_order(order_id, solution_description, end_dt):
             "updated_at": now_br(),
         },
     )
+
     log_action(
         st.session_state.get("user", {}).get("usuario", "sistema"),
         "Fechou ordem",
@@ -3939,6 +4479,8 @@ with st.sidebar:
         "Ordem de serviço",
         "Ordem de preventiva",
         "PMOC",
+        "Motores / Redutores / Periféricos",
+        "Frota",
         "Produção",
         "Dashboard executivo",
         "Solicitações de Compras/Serviços",
@@ -5858,6 +6400,791 @@ elif menu == "PMOC":
                     "**Fim:** "
                     + (fim.strftime("%d/%m/%Y %H:%M") if not pd.isna(fim) else "")
                 )
+elif menu == "Motores / Redutores / Periféricos":
+    st.subheader("Motores / Redutores / Periféricos")
+
+    componentes_df = get_machine_components()
+
+    tab1, tab2, tab3 = st.tabs(
+        [
+            "Dashboard",
+            "Novo componente",
+            "Editar / Excluir",
+        ]
+    )
+
+    # =====================================================
+    # DASHBOARD
+    # =====================================================
+
+    with tab1:
+        total = len(componentes_df)
+
+        ativos = 0
+        reserva = 0
+        desativados = 0
+
+        if not componentes_df.empty:
+            status_comp = componentes_df["status"].astype(str).str.strip().str.upper()
+
+            ativos = (status_comp == "ATIVO").sum()
+            reserva = (status_comp == "RESERVA").sum()
+            desativados = (status_comp == "DESATIVADO").sum()
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Total", int(total))
+        c2.metric("Ativos", int(ativos))
+        c3.metric("Reserva", int(reserva))
+        c4.metric("Desativados", int(desativados))
+
+        st.divider()
+
+        st.markdown("### Componentes cadastrados")
+
+        if componentes_df.empty:
+            st.info("Nenhum componente cadastrado.")
+        else:
+            tabela = componentes_df[
+                [
+                    "codigo",
+                    "tipo",
+                    "descricao",
+                    "fabricante",
+                    "modelo",
+                    "potencia",
+                    "unidade_potencia",
+                    "maquina",
+                    "localizacao",
+                    "status",
+                ]
+            ].copy()
+
+            tabela["potencia"] = tabela["potencia"].fillna("")
+
+            tabela = tabela.rename(
+                columns={
+                    "codigo": "Código",
+                    "tipo": "Tipo",
+                    "descricao": "Descrição",
+                    "fabricante": "Fabricante",
+                    "modelo": "Modelo",
+                    "potencia": "Potência",
+                    "unidade_potencia": "Unidade",
+                    "maquina": "Máquina",
+                    "localizacao": "Localização",
+                    "status": "Status",
+                }
+            )
+
+            st.dataframe(
+                tabela,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # =====================================================
+    # NOVO COMPONENTE
+    # =====================================================
+
+    with tab2:
+        with st.form(
+            "novo_componente",
+            clear_on_submit=True,
+        ):
+            c1, c2 = st.columns(2)
+
+            codigo = c1.text_input("Código / TAG")
+
+            tipo = c2.selectbox(
+                "Tipo",
+                [
+                    "Motor",
+                    "Redutor",
+                    "Periférico",
+                ],
+            )
+
+            descricao = st.text_input("Descrição")
+
+            c3, c4 = st.columns(2)
+
+            fabricante = c3.text_input("Fabricante")
+            modelo = c4.text_input("Modelo")
+
+            c5, c6, c7 = st.columns(3)
+
+            potencia = c5.number_input(
+                "Potência",
+                min_value=0.0,
+                value=0.0,
+                step=0.1,
+            )
+
+            unidade_potencia = c6.selectbox(
+                "Unidade",
+                ["CV", "kW", "HP"],
+            )
+
+            tensao = c7.text_input(
+                "Tensão",
+                placeholder="Ex.: 380 V",
+            )
+
+            maq_options = ["Reserva / Sem máquina"]
+
+            maq_map = {}
+
+            if not machines_df.empty:
+                for _, r in machines_df.iterrows():
+                    label = f"ID {int(r['id'])} - {r['nome']}"
+
+                    maq_options.append(label)
+                    maq_map[label] = int(r["id"])
+
+            maquina = st.selectbox(
+                "Máquina onde está instalado",
+                maq_options,
+            )
+
+            localizacao = st.text_input(
+                "Localização",
+                placeholder=(
+                    "Ex.: acionamento principal, " "almoxarifado manutenção..."
+                ),
+            )
+
+            status = st.selectbox(
+                "Status",
+                [
+                    "ATIVO",
+                    "RESERVA",
+                    "DESATIVADO",
+                ],
+            )
+
+            observacao = st.text_area("Observação")
+
+            salvar = st.form_submit_button(
+                "Salvar componente",
+                use_container_width=True,
+            )
+
+            if salvar:
+                if not codigo.strip():
+                    st.error("Informe o código/TAG do componente.")
+                    st.stop()
+
+                if not descricao.strip():
+                    st.error("Informe a descrição do componente.")
+                    st.stop()
+
+                machine_id = maq_map.get(maquina)
+
+                if status == "ATIVO" and machine_id is None:
+                    st.error("Componente ATIVO deve estar " "vinculado a uma máquina.")
+                    st.stop()
+
+                if status == "RESERVA":
+                    machine_id = None
+
+                create_machine_component(
+                    codigo=codigo,
+                    tipo=tipo,
+                    descricao=descricao,
+                    fabricante=fabricante,
+                    modelo=modelo,
+                    potencia=(potencia if potencia > 0 else None),
+                    unidade_potencia=unidade_potencia,
+                    tensao=tensao,
+                    machine_id=machine_id,
+                    localizacao=localizacao,
+                    status=status,
+                    observacao=observacao,
+                )
+
+                st.success("Componente cadastrado com sucesso.")
+                st.rerun()
+
+    # =====================================================
+    # EDITAR / EXCLUIR
+    # =====================================================
+
+    with tab3:
+        if componentes_df.empty:
+            st.info("Nenhum componente cadastrado.")
+
+        else:
+            comp_map = {
+                (f"{r['codigo']} | " f"{r['tipo']} | " f"{r['descricao']}"): r
+                for _, r in componentes_df.iterrows()
+            }
+
+            selecionado = st.selectbox(
+                "Selecionar componente",
+                list(comp_map.keys()),
+            )
+
+            row = comp_map[selecionado]
+
+            with st.form("editar_componente"):
+                c1, c2 = st.columns(2)
+
+                codigo_edit = c1.text_input(
+                    "Código / TAG",
+                    value=str(row["codigo"]),
+                )
+
+                tipos = [
+                    "Motor",
+                    "Redutor",
+                    "Periférico",
+                ]
+
+                tipo_atual = str(row["tipo"])
+
+                tipo_edit = c2.selectbox(
+                    "Tipo",
+                    tipos,
+                    index=(tipos.index(tipo_atual) if tipo_atual in tipos else 0),
+                )
+
+                descricao_edit = st.text_input(
+                    "Descrição",
+                    value=str(row["descricao"]),
+                )
+
+                c3, c4 = st.columns(2)
+
+                fabricante_edit = c3.text_input(
+                    "Fabricante",
+                    value=(
+                        "" if pd.isna(row["fabricante"]) else str(row["fabricante"])
+                    ),
+                )
+
+                modelo_edit = c4.text_input(
+                    "Modelo",
+                    value=("" if pd.isna(row["modelo"]) else str(row["modelo"])),
+                )
+
+                potencia_atual = (
+                    0.0 if pd.isna(row["potencia"]) else float(row["potencia"])
+                )
+
+                c5, c6, c7 = st.columns(3)
+
+                potencia_edit = c5.number_input(
+                    "Potência",
+                    min_value=0.0,
+                    value=potencia_atual,
+                    step=0.1,
+                )
+
+                unidades = ["CV", "kW", "HP"]
+
+                unidade_atual = str(row["unidade_potencia"] or "CV")
+
+                unidade_edit = c6.selectbox(
+                    "Unidade",
+                    unidades,
+                    index=(
+                        unidades.index(unidade_atual)
+                        if unidade_atual in unidades
+                        else 0
+                    ),
+                )
+
+                tensao_edit = c7.text_input(
+                    "Tensão",
+                    value=("" if pd.isna(row["tensao"]) else str(row["tensao"])),
+                )
+
+                maq_options = ["Reserva / Sem máquina"]
+
+                maq_map = {}
+
+                if not machines_df.empty:
+                    for _, r in machines_df.iterrows():
+                        label = f"ID {int(r['id'])} - {r['nome']}"
+
+                        maq_options.append(label)
+                        maq_map[label] = int(r["id"])
+
+                maquina_atual = "Reserva / Sem máquina"
+
+                if not pd.isna(row["machine_id"]):
+                    for label, machine_id in maq_map.items():
+                        if machine_id == int(row["machine_id"]):
+                            maquina_atual = label
+                            break
+
+                maquina_edit = st.selectbox(
+                    "Máquina onde está instalado",
+                    maq_options,
+                    index=maq_options.index(maquina_atual),
+                )
+
+                localizacao_edit = st.text_input(
+                    "Localização",
+                    value=(
+                        "" if pd.isna(row["localizacao"]) else str(row["localizacao"])
+                    ),
+                )
+
+                status_opts = [
+                    "ATIVO",
+                    "RESERVA",
+                    "DESATIVADO",
+                ]
+
+                status_atual = str(row["status"])
+
+                status_edit = st.selectbox(
+                    "Status",
+                    status_opts,
+                    index=(
+                        status_opts.index(status_atual)
+                        if status_atual in status_opts
+                        else 0
+                    ),
+                )
+
+                observacao_edit = st.text_area(
+                    "Observação",
+                    value=(
+                        "" if pd.isna(row["observacao"]) else str(row["observacao"])
+                    ),
+                )
+
+                b1, b2 = st.columns(2)
+
+                salvar_edit = b1.form_submit_button(
+                    "Atualizar componente",
+                    use_container_width=True,
+                )
+
+                excluir = b2.form_submit_button(
+                    "Excluir componente",
+                    use_container_width=True,
+                )
+
+                if salvar_edit:
+                    machine_id = maq_map.get(maquina_edit)
+
+                    if status_edit == "ATIVO" and machine_id is None:
+                        st.error(
+                            "Componente ATIVO deve estar " "vinculado a uma máquina."
+                        )
+                        st.stop()
+
+                    if status_edit == "RESERVA":
+                        machine_id = None
+
+                    update_machine_component(
+                        component_id=int(row["id"]),
+                        codigo=codigo_edit,
+                        tipo=tipo_edit,
+                        descricao=descricao_edit,
+                        fabricante=fabricante_edit,
+                        modelo=modelo_edit,
+                        potencia=(potencia_edit if potencia_edit > 0 else None),
+                        unidade_potencia=unidade_edit,
+                        tensao=tensao_edit,
+                        machine_id=machine_id,
+                        localizacao=localizacao_edit,
+                        status=status_edit,
+                        observacao=observacao_edit,
+                    )
+
+                    st.success("Componente atualizado.")
+                    st.rerun()
+
+                if excluir:
+                    delete_machine_component(int(row["id"]))
+
+                    st.success("Componente excluído.")
+                    st.rerun()
+
+elif menu == "Frota":
+    st.subheader("Frota")
+
+    frota_df = get_fleet_assets()
+
+    tab1, tab2, tab3 = st.tabs(
+        [
+            "Dashboard",
+            "Novo ativo",
+            "Editar / Excluir",
+        ]
+    )
+
+    # =====================================================
+    # DASHBOARD
+    # =====================================================
+
+    with tab1:
+        total = len(frota_df)
+        ativos = 0
+        manutencao = 0
+        desativados = 0
+
+        if not frota_df.empty:
+            status_frota = frota_df["status"].astype(str).str.strip().str.upper()
+
+            ativos = (status_frota == "ATIVO").sum()
+            manutencao = (status_frota == "MANUTENÇÃO").sum()
+            desativados = (status_frota == "DESATIVADO").sum()
+
+        c1, c2, c3, c4 = st.columns(4)
+
+        c1.metric("Total da frota", int(total))
+        c2.metric("Ativos", int(ativos))
+        c3.metric("Em manutenção", int(manutencao))
+        c4.metric("Desativados", int(desativados))
+
+        st.divider()
+        st.markdown("### Ativos da frota")
+
+        if frota_df.empty:
+            st.info("Nenhum ativo cadastrado.")
+
+        else:
+            tabela = frota_df[
+                [
+                    "codigo",
+                    "tipo",
+                    "descricao",
+                    "marca",
+                    "modelo",
+                    "ano",
+                    "placa",
+                    "tipo_medidor",
+                    "leitura_atual",
+                    "status",
+                ]
+            ].copy()
+
+            tabela = tabela.rename(
+                columns={
+                    "codigo": "Código",
+                    "tipo": "Tipo",
+                    "descricao": "Descrição",
+                    "marca": "Marca",
+                    "modelo": "Modelo",
+                    "ano": "Ano",
+                    "placa": "Placa",
+                    "tipo_medidor": "Medidor",
+                    "leitura_atual": "Leitura atual",
+                    "status": "Status",
+                }
+            )
+
+            st.dataframe(
+                tabela,
+                use_container_width=True,
+                hide_index=True,
+            )
+
+    # =====================================================
+    # NOVO ATIVO
+    # =====================================================
+
+    with tab2:
+        with st.form(
+            "novo_ativo_frota",
+            clear_on_submit=True,
+        ):
+            c1, c2 = st.columns(2)
+
+            codigo = c1.text_input("Código / Prefixo")
+
+            tipo = c2.selectbox(
+                "Tipo",
+                [
+                    "Empilhadeira",
+                    "Carro",
+                    "Caminhão",
+                    "Moto",
+                    "Utilitário",
+                    "Outro",
+                ],
+            )
+
+            descricao = st.text_input("Descrição")
+
+            c3, c4 = st.columns(2)
+
+            marca = c3.text_input("Marca")
+            modelo = c4.text_input("Modelo")
+
+            c5, c6, c7 = st.columns(3)
+
+            ano = c5.number_input(
+                "Ano",
+                min_value=1900,
+                max_value=2100,
+                value=date.today().year,
+                step=1,
+            )
+
+            placa = c6.text_input("Placa")
+
+            patrimonio = c7.text_input("Patrimônio")
+
+            c8, c9 = st.columns(2)
+
+            tipo_medidor = c8.selectbox(
+                "Tipo de medidor",
+                [
+                    "HORÍMETRO",
+                    "ODÔMETRO",
+                    "SEM MEDIDOR",
+                ],
+            )
+
+            leitura_atual = c9.number_input(
+                "Leitura atual",
+                min_value=0.0,
+                value=0.0,
+                step=1.0,
+            )
+
+            status = st.selectbox(
+                "Status",
+                [
+                    "ATIVO",
+                    "MANUTENÇÃO",
+                    "DESATIVADO",
+                ],
+            )
+
+            observacao = st.text_area("Observação")
+
+            salvar = st.form_submit_button(
+                "Salvar ativo",
+                use_container_width=True,
+            )
+
+            if salvar:
+                if not codigo.strip():
+                    st.error("Informe o código/prefixo.")
+                    st.stop()
+
+                if not descricao.strip():
+                    st.error("Informe a descrição.")
+                    st.stop()
+
+                create_fleet_asset(
+                    codigo=codigo,
+                    tipo=tipo,
+                    descricao=descricao,
+                    marca=marca,
+                    modelo=modelo,
+                    ano=int(ano),
+                    placa=placa,
+                    patrimonio=patrimonio,
+                    tipo_medidor=tipo_medidor,
+                    leitura_atual=(
+                        leitura_atual if tipo_medidor != "SEM MEDIDOR" else None
+                    ),
+                    status=status,
+                    observacao=observacao,
+                )
+
+                st.success("Ativo cadastrado com sucesso.")
+                st.rerun()
+
+    # =====================================================
+    # EDITAR / EXCLUIR
+    # =====================================================
+
+    with tab3:
+        if frota_df.empty:
+            st.info("Nenhum ativo cadastrado.")
+
+        else:
+            frota_map = {
+                (f"{r['codigo']} | " f"{r['tipo']} | " f"{r['descricao']}"): r
+                for _, r in frota_df.iterrows()
+            }
+
+            selecionado = st.selectbox(
+                "Selecionar ativo",
+                list(frota_map.keys()),
+            )
+
+            row = frota_map[selecionado]
+
+            with st.form("editar_ativo_frota"):
+                c1, c2 = st.columns(2)
+
+                codigo_edit = c1.text_input(
+                    "Código / Prefixo",
+                    value=str(row["codigo"]),
+                )
+
+                tipos = [
+                    "Empilhadeira",
+                    "Carro",
+                    "Caminhão",
+                    "Moto",
+                    "Utilitário",
+                    "Outro",
+                ]
+
+                tipo_atual = str(row["tipo"])
+
+                tipo_edit = c2.selectbox(
+                    "Tipo",
+                    tipos,
+                    index=(tipos.index(tipo_atual) if tipo_atual in tipos else 0),
+                )
+
+                descricao_edit = st.text_input(
+                    "Descrição",
+                    value=str(row["descricao"]),
+                )
+
+                c3, c4 = st.columns(2)
+
+                marca_edit = c3.text_input(
+                    "Marca",
+                    value=("" if pd.isna(row["marca"]) else str(row["marca"])),
+                )
+
+                modelo_edit = c4.text_input(
+                    "Modelo",
+                    value=("" if pd.isna(row["modelo"]) else str(row["modelo"])),
+                )
+
+                c5, c6, c7 = st.columns(3)
+
+                ano_atual = (
+                    date.today().year if pd.isna(row["ano"]) else int(row["ano"])
+                )
+
+                ano_edit = c5.number_input(
+                    "Ano",
+                    min_value=1900,
+                    max_value=2100,
+                    value=ano_atual,
+                    step=1,
+                )
+
+                placa_edit = c6.text_input(
+                    "Placa",
+                    value=("" if pd.isna(row["placa"]) else str(row["placa"])),
+                )
+
+                patrimonio_edit = c7.text_input(
+                    "Patrimônio",
+                    value=(
+                        "" if pd.isna(row["patrimonio"]) else str(row["patrimonio"])
+                    ),
+                )
+
+                c8, c9 = st.columns(2)
+
+                medidores = [
+                    "HORÍMETRO",
+                    "ODÔMETRO",
+                    "SEM MEDIDOR",
+                ]
+
+                medidor_atual = (
+                    "SEM MEDIDOR"
+                    if pd.isna(row["tipo_medidor"])
+                    else str(row["tipo_medidor"])
+                )
+
+                tipo_medidor_edit = c8.selectbox(
+                    "Tipo de medidor",
+                    medidores,
+                    index=(
+                        medidores.index(medidor_atual)
+                        if medidor_atual in medidores
+                        else 2
+                    ),
+                )
+
+                leitura_atual = (
+                    0.0
+                    if pd.isna(row["leitura_atual"])
+                    else float(row["leitura_atual"])
+                )
+
+                leitura_edit = c9.number_input(
+                    "Leitura atual",
+                    min_value=0.0,
+                    value=leitura_atual,
+                    step=1.0,
+                )
+
+                status_opts = [
+                    "ATIVO",
+                    "MANUTENÇÃO",
+                    "DESATIVADO",
+                ]
+
+                status_atual = str(row["status"])
+
+                status_edit = st.selectbox(
+                    "Status",
+                    status_opts,
+                    index=(
+                        status_opts.index(status_atual)
+                        if status_atual in status_opts
+                        else 0
+                    ),
+                )
+
+                observacao_edit = st.text_area(
+                    "Observação",
+                    value=(
+                        "" if pd.isna(row["observacao"]) else str(row["observacao"])
+                    ),
+                )
+
+                b1, b2 = st.columns(2)
+
+                salvar_edit = b1.form_submit_button(
+                    "Atualizar ativo",
+                    use_container_width=True,
+                )
+
+                excluir = b2.form_submit_button(
+                    "Excluir ativo",
+                    use_container_width=True,
+                )
+
+                if salvar_edit:
+                    update_fleet_asset(
+                        asset_id=int(row["id"]),
+                        codigo=codigo_edit,
+                        tipo=tipo_edit,
+                        descricao=descricao_edit,
+                        marca=marca_edit,
+                        modelo=modelo_edit,
+                        ano=int(ano_edit),
+                        placa=placa_edit,
+                        patrimonio=patrimonio_edit,
+                        tipo_medidor=tipo_medidor_edit,
+                        leitura_atual=(
+                            leitura_edit if tipo_medidor_edit != "SEM MEDIDOR" else None
+                        ),
+                        status=status_edit,
+                        observacao=observacao_edit,
+                    )
+
+                    st.success("Ativo atualizado.")
+                    st.rerun()
+
+                if excluir:
+                    delete_fleet_asset(int(row["id"]))
+
+                    st.success("Ativo excluído.")
+                    st.rerun()
 
 
 elif menu == "Produção":
@@ -6139,13 +7466,23 @@ elif menu == "Máquinas":
 
     with t1:
         with st.form("nova_maquina", clear_on_submit=True):
-            c1, c2 = st.columns(2)
+            c1, c2, c3 = st.columns(3)
+
             nome = c1.text_input("Nome da máquina")
+
             status = c2.selectbox(
-                "Status", ["Ativa", "Parada", "Em manutenção", "Inativa"]
+                "Status",
+                ["Ativa", "Parada", "Em manutenção", "Inativa"],
+            )
+
+            periodicidade = c3.number_input(
+                "Periodicidade preventiva (dias)",
+                min_value=1,
+                value=30,
+                step=1,
             )
             if st.form_submit_button("Salvar máquina", use_container_width=True):
-                create_machine(nome, status)
+                create_machine(nome, status, int(periodicidade))
                 st.success("Máquina cadastrada.")
                 st.rerun()
 
@@ -6166,6 +7503,16 @@ elif menu == "Máquinas":
                     opts,
                     index=opts.index(row["status"]) if row["status"] in opts else 0,
                 )
+                periodicidade_atual = row.get("preventiva_periodicidade_dias")
+                if pd.isna(periodicidade_atual):
+                    periodicidade_atual = 30
+
+                periodicidade = st.number_input(
+                    "Periodicidade preventiva (dias)",
+                    min_value=1,
+                    value=int(periodicidade_atual),
+                    step=1,
+                )
                 b1, b2 = st.columns(2)
                 with b1:
                     salvar = st.form_submit_button(
@@ -6176,7 +7523,7 @@ elif menu == "Máquinas":
                         "Excluir máquina", use_container_width=True
                     )
                 if salvar:
-                    update_machine(int(row["id"]), nome, status)
+                    update_machine(int(row["id"]), nome, status, int(periodicidade))
                     st.success("Máquina atualizada.")
                     st.rerun()
                 if excluir:
@@ -6350,9 +7697,294 @@ def order_page(tipo, titulo):
 
     df_all = get_orders(tipo)
 
-    tabs = st.tabs(["Nova ordem", "Editar ordem", "Consulta", "Excluir ordem"])
+    tabs = st.tabs(
+        ["Dashboard", "Nova ordem", "Editar ordem", "Consulta", "Excluir ordem"]
+    )
 
     with tabs[0]:
+        st.markdown("### Visão geral")
+
+        if str(tipo).upper() == "PREVENTIVA":
+
+            # =====================================================
+            # DASHBOARD - MANUTENÇÃO PREVENTIVA
+            # =====================================================
+
+            hoje = pd.Timestamp.now().normalize()
+
+            # Máquinas ativas
+            maquinas_ativas = 0
+
+            if not machines_df.empty:
+                maquinas_ativas = (
+                    machines_df["status"]
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                    .eq("ATIVA")
+                    .sum()
+                )
+
+            # Base de preventivas
+            preventivas = df_all.copy()
+
+            ordens_abertas = 0
+            ordens_andamento = 0
+            ordens_vencidas = 0
+
+            if not preventivas.empty:
+
+                preventivas["start_datetime"] = pd.to_datetime(
+                    preventivas["start_datetime"],
+                    errors="coerce",
+                )
+
+                status_normalizado = (
+                    preventivas["status"].astype(str).str.strip().str.upper()
+                )
+
+                ordens_abertas = (status_normalizado == "ABERTA").sum()
+
+                ordens_andamento = (status_normalizado == "EM ANDAMENTO").sum()
+
+                ordens_vencidas = (
+                    preventivas["start_datetime"].lt(hoje)
+                    & status_normalizado.isin(["ABERTA", "EM ANDAMENTO"])
+                ).sum()
+
+            # =====================================================
+            # CARDS
+            # =====================================================
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "Máquinas ativas",
+                int(maquinas_ativas),
+            )
+
+            c2.metric(
+                "Ordens abertas",
+                int(ordens_abertas),
+            )
+
+            c3.metric(
+                "Ordens vencidas",
+                int(ordens_vencidas),
+            )
+
+            c4.metric(
+                "Em andamento",
+                int(ordens_andamento),
+            )
+
+            st.divider()
+
+            # =====================================================
+            # PRÓXIMAS PREVENTIVAS
+            # =====================================================
+
+            st.markdown("### Próximas preventivas programadas")
+
+            if preventivas.empty:
+                st.info("Nenhuma preventiva programada.")
+
+            else:
+                proximas = preventivas[
+                    status_normalizado.isin(["ABERTA", "EM ANDAMENTO"])
+                ].copy()
+
+                if proximas.empty:
+                    st.info("Nenhuma preventiva pendente.")
+
+                else:
+                    proximas["Data programada"] = pd.to_datetime(
+                        proximas["start_datetime"],
+                        errors="coerce",
+                    )
+
+                    proximas["Dias"] = (
+                        proximas["Data programada"].dt.normalize() - hoje
+                    ).dt.days
+
+                    proximas["Situação"] = proximas["Dias"].apply(
+                        lambda dias: (
+                            f"Vencida há {abs(int(dias))} dia(s)"
+                            if dias < 0
+                            else ("Hoje" if dias == 0 else f"Em {int(dias)} dia(s)")
+                        )
+                    )
+
+                    proximas = proximas.sort_values(
+                        "Data programada",
+                        ascending=True,
+                    )
+
+                    tabela_proximas = proximas[
+                        [
+                            "id",
+                            "maquina",
+                            "Data programada",
+                            "Situação",
+                            "status",
+                        ]
+                    ].copy()
+
+                    tabela_proximas["Data programada"] = tabela_proximas[
+                        "Data programada"
+                    ].dt.strftime("%d/%m/%Y %H:%M")
+
+                    tabela_proximas = tabela_proximas.rename(
+                        columns={
+                            "id": "OS",
+                            "maquina": "Máquina",
+                            "status": "Status",
+                        }
+                    )
+
+                    st.dataframe(
+                        tabela_proximas,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+        else:
+            # =====================================================
+            # DASHBOARD - ORDENS DE SERVIÇO / CORRETIVAS
+            # =====================================================
+
+            hoje = pd.Timestamp.now()
+
+            # Máquinas ativas
+            maquinas_ativas = 0
+
+            if not machines_df.empty:
+                maquinas_ativas = (
+                    machines_df["status"]
+                    .astype(str)
+                    .str.strip()
+                    .str.upper()
+                    .eq("ATIVA")
+                    .sum()
+                )
+
+            # Base de corretivas
+            corretivas = df_all.copy()
+
+            ordens_abertas = 0
+            mttr = 0.0
+            mtbf = 0.0
+
+            if not corretivas.empty:
+                status_normalizado = (
+                    corretivas["status"].astype(str).str.strip().str.upper()
+                )
+
+                ordens_abertas = status_normalizado.isin(
+                    ["ABERTA", "EM ANDAMENTO"]
+                ).sum()
+
+                mttr = calc_mttr(corretivas)
+                mtbf = calc_mtbf(corretivas)
+
+            # =====================================================
+            # CARDS
+            # =====================================================
+
+            c1, c2, c3, c4 = st.columns(4)
+
+            c1.metric(
+                "Máquinas ativas",
+                int(maquinas_ativas),
+            )
+
+            c2.metric(
+                "Ordens abertas",
+                int(ordens_abertas),
+            )
+
+            c3.metric(
+                "MTTR (h)",
+                format_number(mttr),
+            )
+
+            c4.metric(
+                "MTBF (h)",
+                format_number(mtbf),
+            )
+
+            st.divider()
+
+            # =====================================================
+            # ORDENS EM ABERTO
+            # =====================================================
+
+            st.markdown("### Ordens em aberto")
+
+            if corretivas.empty:
+                st.info("Nenhuma ordem de serviço registrada.")
+
+            else:
+                abertas = corretivas[
+                    status_normalizado.isin(["ABERTA", "EM ANDAMENTO"])
+                ].copy()
+
+                if abertas.empty:
+                    st.info("Nenhuma ordem em aberto.")
+
+                else:
+                    abertas["start_datetime"] = pd.to_datetime(
+                        abertas["start_datetime"],
+                        errors="coerce",
+                    )
+
+                    abertas["Tempo em aberto"] = (
+                        hoje - abertas["start_datetime"]
+                    ).apply(
+                        lambda delta: (
+                            f"{int(delta.total_seconds() // 86400)} dia(s)"
+                            if delta.total_seconds() >= 86400
+                            else f"{int(delta.total_seconds() // 3600)} h"
+                        )
+                    )
+
+                    abertas = abertas.sort_values(
+                        "start_datetime",
+                        ascending=True,
+                    )
+
+                    tabela_abertas = abertas[
+                        [
+                            "id",
+                            "maquina",
+                            "local_problema",
+                            "start_datetime",
+                            "Tempo em aberto",
+                            "status",
+                        ]
+                    ].copy()
+
+                    tabela_abertas["start_datetime"] = tabela_abertas[
+                        "start_datetime"
+                    ].dt.strftime("%d/%m/%Y %H:%M")
+
+                    tabela_abertas = tabela_abertas.rename(
+                        columns={
+                            "id": "OS",
+                            "maquina": "Máquina",
+                            "local_problema": "Local",
+                            "start_datetime": "Abertura",
+                            "status": "Status",
+                        }
+                    )
+
+                    st.dataframe(
+                        tabela_abertas,
+                        use_container_width=True,
+                        hide_index=True,
+                    )
+
+    with tabs[1]:
         if machines_df.empty:
             st.warning("Cadastre máquinas antes de abrir ordens.")
 
@@ -6543,7 +8175,7 @@ def order_page(tipo, titulo):
                     st.success("Ordem cadastrada.")
                     st.rerun()
 
-    with tabs[1]:
+    with tabs[2]:
         df = get_orders(tipo)
         if df.empty:
             st.info("Nenhuma ordem cadastrada.")
@@ -6726,6 +8358,16 @@ def order_page(tipo, titulo):
                         tipo_manutencao=tipo_manutencao,
                         problem_location_id=problem_location_id,
                     )
+
+                    # Gera automaticamente a próxima preventiva
+                    if (
+                        str(tipo).strip().upper() == "PREVENTIVA"
+                        and status == "Finalizada"
+                    ):
+                        gerar_proxima_preventiva(
+                            order_id=int(row["id"]),
+                            end_dt=end_dt_salvar,
+                        )
 
                     log_action(
                         user["usuario"],
@@ -6929,7 +8571,7 @@ def order_page(tipo, titulo):
                         st.success("Peça removida e estoque devolvido.")
                         st.rerun()
 
-    with tabs[2]:
+    with tabs[3]:
         st.markdown("### Filtros")
         c1, c2, c3, c4 = st.columns(4)
         machine_id = None
@@ -7002,7 +8644,7 @@ def order_page(tipo, titulo):
             else:
                 st.info("Nenhuma ordem encontrada com os filtros.")
 
-    with tabs[3]:
+    with tabs[4]:
         df = get_orders(tipo)
         if df.empty:
             st.info("Nenhuma ordem cadastrada.")
