@@ -385,30 +385,6 @@ def init_db():
         """CREATE TABLE IF NOT EXISTS service_order_employees (id INT AUTO_INCREMENT PRIMARY KEY,order_id INT NOT NULL,employee_id INT NOT NULL,start_datetime DATETIME NOT NULL,end_datetime DATETIME NULL,created_at DATETIME NOT NULL,CONSTRAINT fk_soe_order FOREIGN KEY (order_id) REFERENCES service_orders(id),CONSTRAINT fk_soe_employee FOREIGN KEY (employee_id) REFERENCES employees(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS audit_logs (id INT AUTO_INCREMENT PRIMARY KEY,usuario VARCHAR(150) NOT NULL, acao VARCHAR(150) NOT NULL,entidade VARCHAR(100),entidade_id VARCHAR(100),detalhes TEXT,criado_em DATETIME NOT NULL) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS service_order_parts (id INT AUTO_INCREMENT PRIMARY KEY,order_id INT NOT NULL,product_id INT NOT NULL,quantidade DECIMAL(18,3) NOT NULL,created_at DATETIME NOT NULL,CONSTRAINT fk_sop_order FOREIGN KEY (order_id) REFERENCES service_orders(id),CONSTRAINT fk_sop_product FOREIGN KEY (product_id) REFERENCES products(id)) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
-        """CREATE TABLE IF NOT EXISTS service_order_components (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            order_id INT NOT NULL,
-            component_id INT NOT NULL,
-            acao VARCHAR(30) NOT NULL DEFAULT 'MANUTENCAO',
-            observacao TEXT NULL,
-            created_at DATETIME NOT NULL,
-
-            INDEX idx_soc_order (order_id),
-            INDEX idx_soc_component (component_id),
-
-            CONSTRAINT fk_soc_order
-                FOREIGN KEY (order_id)
-                REFERENCES service_orders(id),
-
-            CONSTRAINT fk_soc_component
-                FOREIGN KEY (component_id)
-                REFERENCES machine_components(id),
-
-            UNIQUE KEY uq_soc_order_component (
-                order_id,
-                component_id
-            )
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS fleet_assets (
             id INT AUTO_INCREMENT PRIMARY KEY,
             codigo VARCHAR(50) NOT NULL UNIQUE,
@@ -472,21 +448,25 @@ def init_db():
             id INT AUTO_INCREMENT PRIMARY KEY,
             order_id INT NOT NULL,
             component_id INT NOT NULL,
+            acao VARCHAR(30) NOT NULL DEFAULT 'MANUTENCAO',
+            observacao TEXT NULL,
             created_at DATETIME NOT NULL,
 
-            UNIQUE KEY uq_order_component (
-                order_id,
-                component_id
-            ),
+            INDEX idx_soc_order (order_id),
+            INDEX idx_soc_component (component_id),
 
             CONSTRAINT fk_soc_order
                 FOREIGN KEY (order_id)
-                REFERENCES service_orders(id)
-                ON DELETE CASCADE,
+                REFERENCES service_orders(id),
 
             CONSTRAINT fk_soc_component
                 FOREIGN KEY (component_id)
-                REFERENCES machine_components(id)
+                REFERENCES machine_components(id),
+
+            UNIQUE KEY uq_soc_order_component (
+                order_id,
+                component_id
+            )
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4""",
         """CREATE TABLE IF NOT EXISTS component_location_history (
             id INT AUTO_INCREMENT PRIMARY KEY,
