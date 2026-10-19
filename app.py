@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 import shop_manager_app as shop_manager
 import producao_app as producao
 import streamlit.components.v1 as components
+import html
 from io import BytesIO
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
