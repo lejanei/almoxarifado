@@ -12,6 +12,7 @@ from sqlalchemy import create_engine, text
 import shop_manager_app as shop_manager
 import producao_app as producao
 import streamlit.components.v1 as components
+import html
 from io import BytesIO
 from reportlab.lib import colors
 from reportlab.lib.enums import TA_CENTER, TA_LEFT
@@ -4965,6 +4966,105 @@ def get_order_parts(order_id):
         "SELECT op.id,p.id AS peca_id,p.nome,op.quantidade,p.unidade FROM service_order_parts op INNER JOIN products p ON p.id=op.product_id WHERE op.order_id=:order_id ORDER BY op.id DESC",
         {"order_id": order_id},
     )
+
+
+def gerar_pdf_consulta_os(row, funcionarios, pecas):
+    """Exporta os dados apresentados na consulta de OS para PDF A4."""
+    buffer = BytesIO()
+    documento = SimpleDocTemplate(
+        buffer, pagesize=A4, rightMargin=17 * mm, leftMargin=17 * mm,
+        topMargin=18 * mm, bottomMargin=18 * mm,
+    )
+    estilos = getSampleStyleSheet()
+    estilos.add(ParagraphStyle(
+        name="StockProTituloOS", parent=estilos["Heading1"],
+        fontSize=17, leading=21, textColor=colors.HexColor("#10283D"),
+        spaceAfter=12,
+    ))
+    estilos.add(ParagraphStyle(
+        name="StockProCorpoOS", parent=estilos["BodyText"],
+        fontSize=9, leading=13, spaceAfter=6,
+    ))
+    elementos = [
+        Paragraph(
+            f"StockPro | Ordem de Serviço #{int(row['id'])}",
+            estilos["StockProTituloOS"],
+        ),
+        Paragraph(
+            f"Relatório de consulta • {html.escape(texto_pdf(row.get('tipo')))}",
+            estilos["StockProCorpoOS"],
+        ),
+        Spacer(1, 5 * mm),
+    ]
+
+    def adicionar_secao(titulo, pares):
+        elementos.append(Paragraph(html.escape(titulo), estilos["Heading2"]))
+        linhas = [
+            [
+                Paragraph(f"<b>{html.escape(str(rotulo))}</b>", estilos["StockProCorpoOS"]),
+                Paragraph(html.escape(texto_pdf(valor)), estilos["StockProCorpoOS"]),
+            ]
+            for rotulo, valor in pares
+        ]
+        tabela = Table(linhas, colWidths=[45 * mm, 130 * mm], hAlign="LEFT")
+        tabela.setStyle(TableStyle([
+            ("VALIGN", (0, 0), (-1, -1), "TOP"),
+            ("ROWBACKGROUNDS", (0, 0), (-1, -1), [
+                colors.whitesmoke, colors.white,
+            ]),
+            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+            ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ]))
+        elementos.append(tabela)
+        elementos.append(Spacer(1, 5 * mm))
+
+    adicionar_secao("Identificação", [
+        ("Máquina", row.get("maquina")),
+        ("Tipo", row.get("tipo")),
+        ("Tipo de manutenção", row.get("tipo_manutencao")),
+        ("Local do problema", row.get("local_problema")),
+        ("Centro de custo", row.get("centro_custo")),
+        ("Gerou parada", "Sim" if int(row.get("gera_parada", 0) or 0) == 1 else "Não"),
+        ("Status", row.get("status")),
+        ("Aberta por", row.get("opened_by")),
+        ("Início", format_datetime_br(row.get("start_datetime"))),
+        ("Fim", format_datetime_br(row.get("end_datetime"))),
+        ("Criada em", format_datetime_br(row.get("created_at"))),
+        ("Atualizada em", format_datetime_br(row.get("updated_at"))),
+    ])
+    for titulo, campo in [
+        ("Descrição do problema", "problem_description"),
+        ("Solução", "solution_description"),
+    ]:
+        elementos.append(Paragraph(titulo, estilos["Heading2"]))
+        descricao = html.escape(texto_pdf(row.get(campo))).replace("\n", "<br/>")
+        elementos.append(Paragraph(descricao, estilos["StockProCorpoOS"]))
+        elementos.append(Spacer(1, 4 * mm))
+
+    for titulo, dados in [("Mão de obra", funcionarios), ("Peças utilizadas", pecas)]:
+        elementos.append(Paragraph(titulo, estilos["Heading2"]))
+        if dados.empty:
+            elementos.append(Paragraph("Nenhum registro.", estilos["StockProCorpoOS"]))
+            continue
+        for _, registro in dados.iterrows():
+            partes = [
+                f"<b>{html.escape(str(coluna))}:</b> {html.escape(texto_pdf(valor))}"
+                for coluna, valor in registro.items()
+            ]
+            elementos.append(Paragraph(" | ".join(partes), estilos["StockProCorpoOS"]))
+        elementos.append(Spacer(1, 4 * mm))
+
+    def rodape(canvas, doc):
+        canvas.saveState()
+        canvas.setFont("Helvetica", 8)
+        canvas.setFillColor(colors.grey)
+        canvas.drawString(17 * mm, 12 * mm, "StockPro • Consulta de Ordem de Serviço")
+        canvas.drawRightString(193 * mm, 12 * mm, f"Página {doc.page}")
+        canvas.restoreState()
+
+    documento.build(elementos, onFirstPage=rodape, onLaterPages=rodape)
+    buffer.seek(0)
+    return buffer.getvalue()
 
 
 def visualizar_ordem_streamlit(row, funcionarios, pecas):
@@ -11044,18 +11144,33 @@ def order_page(tipo, titulo):
                 [f"Ordem {int(r['id'])} - {r['maquina']}" for _, r in df.iterrows()],
                 key=f"consulta_select_{tipo}",
             )
+            order_id = int(ordem_escolhida.split(" - ")[0].replace("Ordem ", ""))
+            chave_visualizacao = f"consulta_os_visivel_{tipo}"
             if st.button(
                 "Visualizar ordem",
                 key=f"visualizar_os_{tipo}",
                 use_container_width=True,
             ):
-                order_id = int(ordem_escolhida.split(" - ")[0].replace("Ordem ", ""))
+                st.session_state[chave_visualizacao] = order_id
 
+            if st.session_state.get(chave_visualizacao) == order_id:
                 row_view = df[df["id"].astype(int) == order_id].iloc[0]
                 funcionarios = get_order_employees(order_id)
                 pecas = get_order_parts(order_id)
 
                 visualizar_ordem_streamlit(row_view, funcionarios, pecas)
+                try:
+                    pdf_os = gerar_pdf_consulta_os(row_view, funcionarios, pecas)
+                    st.download_button(
+                        "📄 Baixar PDF desta ordem",
+                        data=pdf_os,
+                        file_name=f"stockpro_os_{order_id}.pdf",
+                        mime="application/pdf",
+                        key=f"pdf_consulta_os_{tipo}_{order_id}",
+                        use_container_width=True,
+                    )
+                except Exception as erro_pdf:
+                    st.error(f"Não foi possível gerar o PDF: {erro_pdf}")
             else:
                 st.info("Nenhuma ordem encontrada com os filtros.")
 
