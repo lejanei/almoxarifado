@@ -9992,195 +9992,198 @@ def order_page(tipo, titulo):
                     )
 
     with tabs[1]:
-        if machines_df.empty:
-            st.warning("Cadastre máquinas antes de abrir ordens.")
-
+        if str(tipo).upper() == "PREVENTIVA" and not is_admin():
+            st.warning("Somente Administrador pode criar ordens preventivas.")
         else:
-            # =====================================================
-            # VÍNCULO COM PMOC
-            # Precisa ficar fora do formulário para atualizar a tela.
-            # =====================================================
+            if machines_df.empty:
+                st.warning("Cadastre máquinas antes de abrir ordens.")
 
-            vincular_pmoc = False
-            pmoc_maquina_id = None
+            else:
+                # =====================================================
+                # VÍNCULO COM PMOC
+                # Precisa ficar fora do formulário para atualizar a tela.
+                # =====================================================
 
-            if str(tipo).upper() == "CORRETIVA":
-                vincular_pmoc = st.checkbox(
-                    "Esta ordem é para uma máquina de ar-condicionado?",
-                    key=f"nova_os_pmoc_{tipo}",
-                )
+                vincular_pmoc = False
+                pmoc_maquina_id = None
 
-                if vincular_pmoc:
-                    maquinas_pmoc_ativas = get_pmoc_maquinas(apenas_ativas=True)
-
-                    if maquinas_pmoc_ativas.empty:
-                        st.warning(
-                            "Não existem máquinas de ar-condicionado "
-                            "ativas cadastradas no PMOC."
-                        )
-
-                    else:
-                        pmoc_maquina_map = {
-                            (
-                                f"{r['codigo']} | "
-                                f"{r['marca'] or 'Sem marca'} | "
-                                f"{r['local'] or 'Sem local'}"
-                            ): int(r["id"])
-                            for _, r in maquinas_pmoc_ativas.iterrows()
-                        }
-
-                        pmoc_maquina_label = st.selectbox(
-                            "Máquina de ar-condicionado",
-                            list(pmoc_maquina_map.keys()),
-                            key=f"nova_os_pmoc_maquina_{tipo}",
-                        )
-
-                        pmoc_maquina_id = pmoc_maquina_map[pmoc_maquina_label]
-
-            with st.form(
-                f"nova_ordem_{tipo}",
-                clear_on_submit=True,
-            ):
-                maq_map = {
-                    f"ID {int(r['id'])} - {r['nome']}": int(r["id"])
-                    for _, r in machines_df.iterrows()
-                }
-
-                opcoes_maquina = ["Selecione a máquina"] + list(maq_map.keys())
-
-                maquina = st.selectbox(
-                    "Máquina",
-                    opcoes_maquina,
-                    index=0,
-                    key=f"nova_ordem_maquina_{tipo}",
-                )
-
-                tipo_manutencao = st.selectbox(
-                    "Tipo da manutenção",
-                    TIPOS_MANUTENCAO,
-                    key=f"novo_tipo_manutencao_{tipo}",
-                )
-                problem_location_id = select_problem_location(
-                    "Local do problema",
-                    key=f"novo_local_problema_{tipo}",
-                )
-                c1, c2 = st.columns(2)
-                data_inicio = c1.date_input(
-                    "Data início", value=date.today(), key=f"di_{tipo}"
-                )
-                hora_inicio = c2.time_input("Hora início", key=f"hi_{tipo}")
-                c3, c4 = st.columns(2)
-                data_fim = c3.date_input(
-                    "Data fim", value=date.today(), key=f"df_{tipo}"
-                )
-                hora_fim = c4.time_input("Hora fim", key=f"hf_{tipo}")
-                problem_description = st.text_area("Descrição do problema")
-                gera_parada = st.checkbox(
-                    "Gerou parada de máquina?",
-                    value=False,
-                    help="Marque Sim quando a máquina ficou parada por causa desta OS.",
-                )
-                centro_custo_id = select_cost_center(
-                    "Centro de custo da ordem", key=f"cc_ordem_{tipo}"
-                )
-                status = st.selectbox(
-                    "Status",
-                    ["Aberta", "Em andamento", "Finalizada", "Cancelada"],
-                    key=f"st_{tipo}",
-                )
-                solution_description = st.text_area("Descrição da solução")
-                if st.form_submit_button(
-                    "Salvar ordem",
-                    use_container_width=True,
-                ):
-                    if not vincular_pmoc and maquina == "Selecione a máquina":
-                        st.error("Selecione uma máquina antes de criar a ordem.")
-                        st.stop()
-
-                    if vincular_pmoc and pmoc_maquina_id is None:
-                        st.error("Selecione uma máquina de ar-condicionado.")
-                        st.stop()
-
-                    start_dt = combine_date_time(
-                        data_inicio,
-                        hora_inicio,
+                if str(tipo).upper() == "CORRETIVA":
+                    vincular_pmoc = st.checkbox(
+                        "Esta ordem é para uma máquina de ar-condicionado?",
+                        key=f"nova_os_pmoc_{tipo}",
                     )
-
-                    end_dt = combine_date_time(
-                        data_fim,
-                        hora_fim,
-                    )
-
-                    machine_id_salvar = None
 
                     if vincular_pmoc:
-                        maquina_pmoc_generica = machines_df[
-                            machines_df["nome"].astype(str).str.strip().str.upper()
-                            == "AR-CONDICIONADO / PMOC"
-                        ]
+                        maquinas_pmoc_ativas = get_pmoc_maquinas(apenas_ativas=True)
 
-                        if maquina_pmoc_generica.empty:
-                            st.error(
-                                "Cadastre uma máquina comum com o nome "
-                                "'AR-CONDICIONADO / PMOC' antes de abrir "
-                                "uma corretiva PMOC."
+                        if maquinas_pmoc_ativas.empty:
+                            st.warning(
+                                "Não existem máquinas de ar-condicionado "
+                                "ativas cadastradas no PMOC."
                             )
+
+                        else:
+                            pmoc_maquina_map = {
+                                (
+                                    f"{r['codigo']} | "
+                                    f"{r['marca'] or 'Sem marca'} | "
+                                    f"{r['local'] or 'Sem local'}"
+                                ): int(r["id"])
+                                for _, r in maquinas_pmoc_ativas.iterrows()
+                            }
+
+                            pmoc_maquina_label = st.selectbox(
+                                "Máquina de ar-condicionado",
+                                list(pmoc_maquina_map.keys()),
+                                key=f"nova_os_pmoc_maquina_{tipo}",
+                            )
+
+                            pmoc_maquina_id = pmoc_maquina_map[pmoc_maquina_label]
+
+                with st.form(
+                    f"nova_ordem_{tipo}",
+                    clear_on_submit=True,
+                ):
+                    maq_map = {
+                        f"ID {int(r['id'])} - {r['nome']}": int(r["id"])
+                        for _, r in machines_df.iterrows()
+                    }
+
+                    opcoes_maquina = ["Selecione a máquina"] + list(maq_map.keys())
+
+                    maquina = st.selectbox(
+                        "Máquina",
+                        opcoes_maquina,
+                        index=0,
+                        key=f"nova_ordem_maquina_{tipo}",
+                    )
+
+                    tipo_manutencao = st.selectbox(
+                        "Tipo da manutenção",
+                        TIPOS_MANUTENCAO,
+                        key=f"novo_tipo_manutencao_{tipo}",
+                    )
+                    problem_location_id = select_problem_location(
+                        "Local do problema",
+                        key=f"novo_local_problema_{tipo}",
+                    )
+                    c1, c2 = st.columns(2)
+                    data_inicio = c1.date_input(
+                        "Data início", value=date.today(), key=f"di_{tipo}"
+                    )
+                    hora_inicio = c2.time_input("Hora início", key=f"hi_{tipo}")
+                    c3, c4 = st.columns(2)
+                    data_fim = c3.date_input(
+                        "Data fim", value=date.today(), key=f"df_{tipo}"
+                    )
+                    hora_fim = c4.time_input("Hora fim", key=f"hf_{tipo}")
+                    problem_description = st.text_area("Descrição do problema")
+                    gera_parada = st.checkbox(
+                        "Gerou parada de máquina?",
+                        value=False,
+                        help="Marque Sim quando a máquina ficou parada por causa desta OS.",
+                    )
+                    centro_custo_id = select_cost_center(
+                        "Centro de custo da ordem", key=f"cc_ordem_{tipo}"
+                    )
+                    status = st.selectbox(
+                        "Status",
+                        ["Aberta", "Em andamento", "Finalizada", "Cancelada"],
+                        key=f"st_{tipo}",
+                    )
+                    solution_description = st.text_area("Descrição da solução")
+                    if st.form_submit_button(
+                        "Salvar ordem",
+                        use_container_width=True,
+                    ):
+                        if not vincular_pmoc and maquina == "Selecione a máquina":
+                            st.error("Selecione uma máquina antes de criar a ordem.")
                             st.stop()
 
-                        machine_id_salvar = int(maquina_pmoc_generica.iloc[0]["id"])
+                        if vincular_pmoc and pmoc_maquina_id is None:
+                            st.error("Selecione uma máquina de ar-condicionado.")
+                            st.stop()
 
-                    else:
-                        machine_id_salvar = maq_map[maquina]
+                        start_dt = combine_date_time(
+                            data_inicio,
+                            hora_inicio,
+                        )
 
-                    order_id = create_order(
-                        tipo=tipo,
-                        opened_by=user["usuario"],
-                        machine_id=machine_id_salvar,
-                        start_dt=start_dt,
-                        end_dt=end_dt,
-                        problem_description=problem_description,
-                        status=status,
-                        solution_description=solution_description,
-                        centro_custo_id=centro_custo_id,
-                        gera_parada=gera_parada,
-                        tipo_manutencao=tipo_manutencao,
-                        problem_location_id=problem_location_id,
-                    )
+                        end_dt = combine_date_time(
+                            data_fim,
+                            hora_fim,
+                        )
 
-                    numero_pmoc = None
-                    if vincular_pmoc and order_id:
-                        _, numero_pmoc = create_pmoc_corretiva(
-                            maquina_id=pmoc_maquina_id,
-                            service_order_id=order_id,
-                            status="ABERTA",
-                            observacao=(
-                                f"Corretiva PMOC vinculada à OS {order_id}. "
-                                f"Problema: {problem_description}"
-                            ),
+                        machine_id_salvar = None
+
+                        if vincular_pmoc:
+                            maquina_pmoc_generica = machines_df[
+                                machines_df["nome"].astype(str).str.strip().str.upper()
+                                == "AR-CONDICIONADO / PMOC"
+                            ]
+
+                            if maquina_pmoc_generica.empty:
+                                st.error(
+                                    "Cadastre uma máquina comum com o nome "
+                                    "'AR-CONDICIONADO / PMOC' antes de abrir "
+                                    "uma corretiva PMOC."
+                                )
+                                st.stop()
+
+                            machine_id_salvar = int(maquina_pmoc_generica.iloc[0]["id"])
+
+                        else:
+                            machine_id_salvar = maq_map[maquina]
+
+                        order_id = create_order(
+                            tipo=tipo,
+                            opened_by=user["usuario"],
+                            machine_id=machine_id_salvar,
+                            start_dt=start_dt,
+                            end_dt=end_dt,
+                            problem_description=problem_description,
+                            status=status,
+                            solution_description=solution_description,
+                            centro_custo_id=centro_custo_id,
+                            gera_parada=gera_parada,
+                            tipo_manutencao=tipo_manutencao,
+                            problem_location_id=problem_location_id,
                         )
-                    if vincular_pmoc:
-                        maquina_nome = pmoc_maquina_label
-                    else:
-                        maquina_nome = (
-                            maquina.split(" - ", 1)[1] if " - " in maquina else maquina
-                        )
-                    centro_custo_nome = get_cost_center_name_by_id(centro_custo_id)
-                    if order_id:
-                        notificar_telegram_nova_ordem(
-                            order_id,
-                            tipo,
-                            user["usuario"],
-                            maquina_nome,
-                            centro_custo_nome,
-                            start_dt,
-                            end_dt,
-                            problem_description,
-                            status,
-                            solution_description,
-                            planta=st.session_state.get("planta", PLANTA_PADRAO),
-                        )
-                    st.success("Ordem cadastrada.")
-                    st.rerun()
+
+                        numero_pmoc = None
+                        if vincular_pmoc and order_id:
+                            _, numero_pmoc = create_pmoc_corretiva(
+                                maquina_id=pmoc_maquina_id,
+                                service_order_id=order_id,
+                                status="ABERTA",
+                                observacao=(
+                                    f"Corretiva PMOC vinculada à OS {order_id}. "
+                                    f"Problema: {problem_description}"
+                                ),
+                            )
+                        if vincular_pmoc:
+                            maquina_nome = pmoc_maquina_label
+                        else:
+                            maquina_nome = (
+                                maquina.split(" - ", 1)[1] if " - " in maquina else maquina
+                            )
+                        centro_custo_nome = get_cost_center_name_by_id(centro_custo_id)
+                        if order_id:
+                            notificar_telegram_nova_ordem(
+                                order_id,
+                                tipo,
+                                user["usuario"],
+                                maquina_nome,
+                                centro_custo_nome,
+                                start_dt,
+                                end_dt,
+                                problem_description,
+                                status,
+                                solution_description,
+                                planta=st.session_state.get("planta", PLANTA_PADRAO),
+                            )
+                        st.success("Ordem cadastrada.")
+                        st.rerun()
 
     with tabs[2]:
         df = get_orders(tipo)
