@@ -1153,7 +1153,7 @@ def get_movements():
 
 def get_critical_products():
     return fetch_df(
-        "SELECT id,nome,unidade,estoque_atual,estoque_minimo,(estoque_minimo-estoque_atual) AS falta_para_minimo FROM products WHERE estoque_atual<=estoque_minimo ORDER BY falta_para_minimo DESC,nome"
+        "SELECT id,nome,unidade,estoque_atual,estoque_minimo,(estoque_minimo-estoque_atual) AS falta_para_minimo FROM products WHERE estoque_atual<estoque_minimo ORDER BY falta_para_minimo DESC,nome"
     )
 
 
@@ -5812,7 +5812,7 @@ elif menu == "Dashboard":
     with r1:
         st.markdown("### Itens críticos")
         if criticos_df.empty:
-            st.success("Nenhum item abaixo ou igual ao estoque mínimo.")
+            st.success("Nenhum item abaixo do estoque de segurança.")
         else:
             st.dataframe(
                 criticos_df.rename(
