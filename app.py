@@ -1038,61 +1038,86 @@ def register_stock_movement(
     observacao,
     usuario_lancamento,
     valor_unitario_entrada=0,
+    order_id=None,
 ):
-    produto = fetch_df(
-        "SELECT id, estoque_atual, valor_unitario FROM products WHERE id=:id",
-        {"id": int(produto_id)},
-    )
-
-    if produto.empty:
-        raise ValueError("Produto não encontrado.")
-
-    estoque_atual = float(produto.iloc[0]["estoque_atual"] or 0)
-    valor_atual = float(produto.iloc[0].get("valor_unitario", 0) or 0)
+    """Movimenta estoque e, quando aplicável, vincula a saída à OS atomicamente."""
     quantidade = float(quantidade)
     tipo = str(tipo).upper()
+    if tipo not in ("ENTRADA", "SAIDA"):
+        raise ValueError("Tipo de movimentação inválido.")
+    if quantidade <= 0:
+        raise ValueError("A quantidade deve ser maior que zero.")
+    if order_id is not None and tipo != "SAIDA":
+        raise ValueError("Somente saídas podem ser vinculadas a uma OS.")
 
-    if tipo == "ENTRADA":
-        novo_estoque = estoque_atual + quantidade
-        novo_valor = calcular_custo_medio_entrada(
-            estoque_atual,
-            valor_atual,
-            quantidade,
-            valor_unitario_entrada,
+    with get_engine().begin() as conn:
+        if order_id is not None:
+            ordem = conn.execute(
+                text("SELECT id FROM service_orders WHERE id=:id"),
+                {"id": int(order_id)},
+            ).first()
+            if ordem is None:
+                raise ValueError("Ordem de serviço não encontrada.")
+
+        produto = conn.execute(
+            text(
+                "SELECT id, estoque_atual, valor_unitario "
+                "FROM products WHERE id=:id FOR UPDATE"
+            ),
+            {"id": int(produto_id)},
+        ).mappings().first()
+        if produto is None:
+            raise ValueError("Produto não encontrado.")
+
+        estoque_atual = float(produto["estoque_atual"] or 0)
+        valor_atual = float(produto["valor_unitario"] or 0)
+        if tipo == "ENTRADA":
+            novo_estoque = estoque_atual + quantidade
+            novo_valor = calcular_custo_medio_entrada(
+                estoque_atual, valor_atual, quantidade, valor_unitario_entrada
+            )
+        else:
+            if quantidade > estoque_atual:
+                raise ValueError("Estoque insuficiente para saída.")
+            novo_estoque = estoque_atual - quantidade
+            novo_valor = valor_atual
+
+        agora = now_br()
+        conn.execute(
+            text(
+                "UPDATE products SET estoque_atual=:estoque, "
+                "valor_unitario=:valor_unitario, atualizado_em=:agora WHERE id=:id"
+            ),
+            {
+                "id": int(produto_id), "estoque": novo_estoque,
+                "valor_unitario": novo_valor, "agora": agora,
+            },
         )
-    else:
-        if quantidade > estoque_atual:
-            raise ValueError("Estoque insuficiente para saída.")
-        novo_estoque = estoque_atual - quantidade
-        novo_valor = valor_atual
-
-    execute(
-        """UPDATE products
-              SET estoque_atual=:estoque,
-                  valor_unitario=:valor_unitario,
-                  atualizado_em=:agora
-            WHERE id=:id""",
-        {
-            "id": int(produto_id),
-            "estoque": novo_estoque,
-            "valor_unitario": novo_valor,
-            "agora": now_br(),
-        },
-    )
-
-    execute(
-        """INSERT INTO movements
-           (produto_id,tipo,quantidade,observacao,usuario_lancamento,criado_em)
-           VALUES (:produto_id,:tipo,:quantidade,:observacao,:usuario_lancamento,:criado_em)""",
-        {
-            "produto_id": int(produto_id),
-            "tipo": tipo,
-            "quantidade": quantidade,
-            "observacao": observacao,
-            "usuario_lancamento": usuario_lancamento,
-            "criado_em": now_br(),
-        },
-    )
+        conn.execute(
+            text(
+                "INSERT INTO movements "
+                "(produto_id,tipo,quantidade,observacao,usuario_lancamento,criado_em) "
+                "VALUES (:produto_id,:tipo,:quantidade,:observacao,"
+                ":usuario_lancamento,:criado_em)"
+            ),
+            {
+                "produto_id": int(produto_id), "tipo": tipo,
+                "quantidade": quantidade, "observacao": observacao,
+                "usuario_lancamento": usuario_lancamento, "criado_em": agora,
+            },
+        )
+        if order_id is not None:
+            conn.execute(
+                text(
+                    "INSERT INTO service_order_parts "
+                    "(order_id,product_id,quantidade,created_at) "
+                    "VALUES (:order_id,:product_id,:quantidade,:created_at)"
+                ),
+                {
+                    "order_id": int(order_id), "product_id": int(produto_id),
+                    "quantidade": quantidade, "created_at": agora,
+                },
+            )
 
 
 def update_product_record(
@@ -9375,6 +9400,8 @@ elif menu == "Produtos / Estoque":
             if products_df.empty:
                 st.info("Cadastre produtos primeiro.")
             else:
+                # Fora do formulário para atualizar os campos ao trocar o tipo.
+                tipo = st.selectbox("Tipo de movimentação", ["ENTRADA", "SAIDA"], key="mov_estoque_tipo")
                 with st.form("mov_estoque", clear_on_submit=True):
                     produto_map = {
                         f"ID {int(r['id'])} - {r['nome']} | saldo: {r['estoque_atual']} {r['unidade']}": int(
@@ -9384,7 +9411,6 @@ elif menu == "Produtos / Estoque":
                     }
 
                     produto = st.selectbox("Produto", list(produto_map.keys()))
-                    tipo = st.selectbox("Tipo", ["ENTRADA", "SAIDA"])
                     quantidade = st.number_input(
                         "Quantidade", min_value=0.01, value=1.0
                     )
@@ -9398,19 +9424,41 @@ elif menu == "Produtos / Estoque":
                             step=0.01,
                         )
 
+                    order_id_saida = None
+                    if tipo == "SAIDA":
+                        ordens_disponiveis = pd.concat(
+                            [os_df, pm_df], ignore_index=True
+                        )
+                        opcoes_os = {"Sem vínculo com OS": None}
+                        for _, ordem in ordens_disponiveis.iterrows():
+                            rotulo = (
+                                f"OS #{int(ordem['id'])} | {ordem['tipo']} | "
+                                f"{ordem['maquina']} | {ordem['status']}"
+                            )
+                            opcoes_os[rotulo] = int(ordem["id"])
+                        escolha_os = st.selectbox(
+                            "Ordem de serviço (opcional)", list(opcoes_os)
+                        )
+                        order_id_saida = opcoes_os[escolha_os]
+
                     observacao = st.text_input("Observação")
 
                     if st.form_submit_button("Lançar", use_container_width=True):
-                        register_stock_movement(
-                            produto_map[produto],
-                            tipo,
-                            quantidade,
-                            observacao,
-                            user["usuario"],
-                            valor_unitario_entrada,
-                        )
-                        st.success("Movimentação registrada.")
-                        st.rerun()
+                        try:
+                            register_stock_movement(
+                                produto_map[produto],
+                                tipo,
+                                quantidade,
+                                observacao,
+                                user["usuario"],
+                                valor_unitario_entrada,
+                                order_id=order_id_saida,
+                            )
+                        except Exception as erro:
+                            st.error(f"Movimentação não registrada: {erro}")
+                        else:
+                            st.success("Movimentação registrada.")
+                            st.rerun()
 
     with t4:
         if products_df.empty:
@@ -10501,49 +10549,13 @@ def order_page(tipo, titulo):
 
             with cb:
                 st.markdown("### Peças utilizadas")
-
-                if products_df.empty:
-                    st.info("Nenhuma peça cadastrada no estoque.")
-                else:
-                    with st.form(
-                        f"peca_ordem_edit_{tipo}_{order_id_atual}", clear_on_submit=True
-                    ):
-                        part_map = {
-                            f"ID {int(r['id'])} - {r['nome']} | saldo: {r['estoque_atual']} {r['unidade']}": int(
-                                r["id"]
-                            )
-                            for _, r in products_df.iterrows()
-                        }
-
-                        peca = st.selectbox(
-                            "Peça",
-                            list(part_map.keys()),
-                            key=f"peca_edit_{tipo}_{order_id_atual}",
-                        )
-
-                        quantidade = st.number_input(
-                            "Quantidade",
-                            min_value=0.01,
-                            value=1.0,
-                            key=f"qtd_edit_{tipo}_{order_id_atual}",
-                        )
-
-                        if st.form_submit_button(
-                            "Adicionar peça e baixar estoque", use_container_width=True
-                        ):
-                            add_part_to_order(
-                                order_id_atual,
-                                part_map[peca],
-                                quantidade,
-                                user["usuario"],
-                            )
-                            st.success("Peça lançada na ordem.")
-                            st.rerun()
-
+                st.info(
+                    "O lançamento e a devolução de peças são realizados "
+                    "exclusivamente em Produtos / Estoque → Entrada/Saída."
+                )
                 order_parts = get_order_parts(order_id_atual)
-
                 if order_parts.empty:
-                    st.info("Nenhuma peça lançada nesta ordem.")
+                    st.info("Nenhuma peça vinculada a esta ordem.")
                 else:
                     st.dataframe(
                         order_parts.rename(
@@ -10558,28 +10570,6 @@ def order_page(tipo, titulo):
                         use_container_width=True,
                         hide_index=True,
                     )
-
-                    part_del_map = {
-                        f"ID vínculo {int(r['id'])} - {r['nome']} | {r['quantidade']} {r['unidade']}": int(
-                            r["id"]
-                        )
-                        for _, r in order_parts.iterrows()
-                    }
-
-                    part_del = st.selectbox(
-                        "Peça para remover",
-                        list(part_del_map.keys()),
-                        key=f"del_part_edit_{tipo}_{order_id_atual}",
-                    )
-
-                    if st.button(
-                        "Remover peça e devolver ao estoque",
-                        key=f"btn_del_part_edit_{tipo}_{order_id_atual}",
-                        use_container_width=True,
-                    ):
-                        delete_part_from_order(part_del_map[part_del], user["usuario"])
-                        st.success("Peça removida e estoque devolvido.")
-                        st.rerun()
         # =====================================================
         # COMPONENTES VINCULADOS À ORDEM
         # =====================================================
