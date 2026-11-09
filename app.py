@@ -9400,6 +9400,8 @@ elif menu == "Produtos / Estoque":
             if products_df.empty:
                 st.info("Cadastre produtos primeiro.")
             else:
+                # Fora do formulário para atualizar os campos ao trocar o tipo.
+                tipo = st.selectbox("Tipo de movimentação", ["ENTRADA", "SAIDA"], key="mov_estoque_tipo")
                 with st.form("mov_estoque", clear_on_submit=True):
                     produto_map = {
                         f"ID {int(r['id'])} - {r['nome']} | saldo: {r['estoque_atual']} {r['unidade']}": int(
@@ -9409,7 +9411,6 @@ elif menu == "Produtos / Estoque":
                     }
 
                     produto = st.selectbox("Produto", list(produto_map.keys()))
-                    tipo = st.selectbox("Tipo", ["ENTRADA", "SAIDA"])
                     quantidade = st.number_input(
                         "Quantidade", min_value=0.01, value=1.0
                     )
