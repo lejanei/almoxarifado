@@ -9453,7 +9453,7 @@ elif menu == "Produtos / Estoque":
                                 valor_unitario_entrada,
                                 order_id=order_id_saida,
                             )
-                        except (ValueError, Exception) as erro:
+                        except Exception as erro:
                             st.error(f"Movimentação não registrada: {erro}")
                         else:
                             st.success("Movimentação registrada.")
